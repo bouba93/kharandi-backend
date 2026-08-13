@@ -1,0 +1,255 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Kharandi — Production VPS YIGUI (212.95.33.158)
+#
+#   Internet ──▶ nginx (80/443) ──▶ api (gunicorn:8000) ──┬──▶ db    (postgres)
+#                                                          └──▶ redis
+#                                    worker (celery) ───────┴──▶ db / redis
+#                                    beat   (celery beat) ──▶ redis ──▶ worker
+#
+#   `beat` est le PLANIFICATEUR : il déclenche la réconciliation des paiements
+#   LengoPay toutes les 3 minutes. Sans lui, un callback perdu = un client qui
+#   a payé sans rien recevoir. UN SEUL conteneur beat, jamais deux.
+#
+#   Le frontend reste sur Vercel (kharandi.gn) : rien ici ne le concerne.
+#
+# Lancer :  docker compose up -d --build
+# NE JAMAIS utiliser `docker compose down -v` : cela détruirait postgres_data.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ─── Fragments réutilisables ─────────────────────────────────────────────────
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-django-common: &django-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: kharandi-api:latest
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgres://${POSTGRES_USER:-kharandi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kharandi_db}
+    REDIS_URL:    redis://redis:6379/0
+    PORT:         "8000"
+  volumes:
+    - media_data:/app/media
+    - static_data:/app/staticfiles
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - kharandi
+  logging: *default-logging
+
+
+services:
+
+  # ─── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-kharandi_db}
+      POSTGRES_USER:     ${POSTGRES_USER:-kharandi_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+      # ⚠️ NE PAS définir PGDATA : le cluster existant vit déjà directement dans
+      #    /var/lib/postgresql/data. Le déplacer vers un sous-dossier ferait
+      #    croire à Postgres que le volume est vide et déclencherait un initdb
+      #    sur une base neuve — perte apparente de toutes les données.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Aucun `ports:` → PostgreSQL n'est JOIGNABLE QUE depuis le réseau Docker.
+    # Pour un accès admin ponctuel, passer par un tunnel SSH, jamais par 5432
+    # publié sur Internet.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kharandi_user} -d ${POSTGRES_DB:-kharandi_db} -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
+    networks:
+      - kharandi
+    logging: *default-logging
+
+  # ─── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --save 900 1
+    volumes:
+      - redis_data:/data
+    # Aucun `ports:` → Redis reste privé au réseau Docker.
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 15s
+    networks:
+      - kharandi
+    logging: *default-logging
+
+  # ─── Django API (Gunicorn) ───────────────────────────────────────────────────
+  api:
+    <<: *django-common
+    command: ["bash", "start.sh"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-kharandi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kharandi_db}
+      REDIS_URL:    redis://redis:6379/0
+      PORT:         "8000"
+      # Rôle du conteneur : c'est LUI (et lui seul) qui applique les migrations.
+      CONTAINER_ROLE:  web
+      RUN_MIGRATIONS:  "1"
+      RUN_COLLECTSTATIC: "1"
+      # Le worker Celery tourne dans son propre service → pas de nohup ici.
+      RUN_CELERY_IN_API: "0"
+      # Le scraper BAC est un job long : désactivé au démarrage par défaut.
+      # Le lancer à la demande : docker compose exec api python manage.py scrape_bac_subjects
+      RUN_BAC_SCRAPER: "0"
+    expose:
+      - "8000"
+    # Liveness uniquement (pas d'accès base) : un incident PostgreSQL ne doit
+    # pas faire passer le conteneur applicatif en `unhealthy`.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status==200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    stop_grace_period: 30s
+
+  # ─── Worker Celery (service dédié, plus de nohup dans l'API) ────────────────
+  worker:
+    <<: *django-common
+    command: ["bash", "start-worker.sh"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-kharandi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kharandi_db}
+      REDIS_URL:    redis://redis:6379/0
+      CONTAINER_ROLE: worker
+      # Le worker n'applique JAMAIS de migration (une seule source de vérité).
+      RUN_MIGRATIONS: "0"
+      RUN_COLLECTSTATIC: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A kharandi_backend inspect ping -d celery@$$HOSTNAME >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 120s
+    stop_grace_period: 60s
+
+  # ─── Celery Beat (planificateur) ─────────────────────────────────────────────
+  # ⚠️ NE JAMAIS mettre à l'échelle ce service (`--scale beat=2`) : chaque
+  #    tâche serait émise en double. Les tâches sont protégées par un verrou
+  #    Redis, mais ce n'est pas une raison pour créer le problème.
+  beat:
+    <<: *django-common
+    command: ["bash", "start-beat.sh"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-kharandi_user}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kharandi_db}
+      REDIS_URL:    redis://redis:6379/0
+      CONTAINER_ROLE: beat
+      # Beat n'applique JAMAIS de migration (une seule source de vérité : api).
+      RUN_MIGRATIONS: "0"
+      RUN_COLLECTSTATIC: "0"
+      BEAT_STATE_DIR: /app/beat
+      BEAT_SCHEDULE_FILE: /app/beat/celerybeat-schedule
+      CELERY_BEAT_SCHEDULE_FILENAME: /app/beat/celerybeat-schedule
+    volumes:
+      - media_data:/app/media
+      - static_data:/app/staticfiles
+      # État du planificateur : conservé entre les redémarrages pour ne pas
+      # rejouer en rafale toutes les tâches manquées après une coupure.
+      - beat_data:/app/beat
+    # Sonde locale : processus vivant + fichier d'état écrit récemment. Détecte
+    # le cas dangereux d'un Beat vivant mais bloqué (plus aucune tâche émise).
+    healthcheck:
+      test: ["CMD", "python", "/app/beat-healthcheck.py"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 180s
+    stop_grace_period: 30s
+
+  # ─── Nginx (reverse proxy + statiques + SSL) ─────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/kharandi.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/health.conf:/etc/nginx/conf.d/00-health.conf:ro
+      - ./nginx/proxy_params.conf:/etc/nginx/snippets/proxy_params.conf:ro
+      - static_data:/app/staticfiles:ro
+      - media_data:/app/media:ro
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot
+    depends_on:
+      api:
+        # `service_started` et NON `service_healthy` : Nginx doit pouvoir
+        # démarrer et répondre même si Django met du temps (ou échoue) —
+        # sinon un souci applicatif rend le VPS totalement muet.
+        condition: service_started
+    # Healthcheck = liveness Nginx pur, via l'écouteur interne 127.0.0.1:8081.
+    # Il ne dépend ni du Host, ni de Django, ni du frontend Vercel.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 20s
+    networks:
+      - kharandi
+    logging: *default-logging
+
+  # ─── Certbot (SSL Let's Encrypt gratuit) ─────────────────────────────────────
+  certbot:
+    image: certbot/certbot
+    restart: unless-stopped
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: >
+      /bin/sh -c 'trap exit TERM;
+      while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done;'
+    depends_on:
+      nginx:
+        condition: service_started
+    networks:
+      - kharandi
+    logging: *default-logging
+
+
+networks:
+  kharandi:
+    driver: bridge
+
+# ⚠️ AUCUN de ces volumes ne doit être supprimé : `docker compose down -v`,
+#    `docker volume prune` et `docker volume rm` détruiraient les données de
+#    production. Pour arrêter la pile : `docker compose down` (sans -v).
+volumes:
+  postgres_data:   # base de données — irremplaçable
+  redis_data:      # cache et file de tâches Celery
+  media_data:      # fichiers envoyés par les utilisateurs
+  static_data:     # fichiers statiques collectés
+  certbot_certs:   # certificats Let's Encrypt
+  certbot_www:     # challenges ACME
+  beat_data:       # état du planificateur Celery Beat
