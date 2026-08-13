@@ -1,0 +1,170 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Kharandi API — Nginx HTTPS (activé par deploy/enable-ssl.sh)
+# __DOMAIN__ est remplacé automatiquement par le domaine backend fourni
+# (ex. api.kharandi.gn). Le frontend Vercel (kharandi.gn) n'est PAS concerné.
+#
+# Les mêmes règles que la version HTTP s'appliquent :
+#   • `Host $host` forcé partout via snippets/proxy_params.conf
+#   • resolver Docker + upstream en variable (re-résolution à chaud)
+#   • default_server 444 sur les Host inconnus
+#   • le healthcheck du conteneur reste sur 127.0.0.1:8081 (nginx/health.conf)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1) Catch-all HTTP — Host inconnus
+# ══════════════════════════════════════════════════════════════════════════════
+server {
+    listen 80 default_server;
+    server_name _;
+    access_log off;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 444;
+    }
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2) HTTP — challenge Certbot + redirection HTTPS
+# ══════════════════════════════════════════════════════════════════════════════
+server {
+    listen 80;
+    server_name __DOMAIN__ 212.95.33.158 localhost 127.0.0.1;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    resolver_timeout 5s;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Sondes accessibles en clair : Docker/monitoring ne doivent pas dépendre
+    # de la validité du certificat.
+    location = /nginx-health {
+        default_type text/plain;
+        access_log off;
+        return 200 "nginx ok\n";
+    }
+
+    location = /healthz {
+        set $kharandi_api "api:8000";
+        proxy_pass http://$kharandi_api/healthz;
+        include /etc/nginx/snippets/proxy_params.conf;
+        access_log off;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout    5s;
+    }
+
+    # ── Callback de paiement LengoPay ────────────────────────────────────────
+    # EXCEPTION VOLONTAIRE À LA REDIRECTION HTTPS.
+    # LengoPay notifie en POST sur l'URL enregistrée côté marchand. Une
+    # redirection 301 ferait perdre le corps de la requête (la plupart des
+    # clients HTTP ne rejouent pas un POST après redirection) : la confirmation
+    # de paiement serait définitivement perdue.
+    # Tant que l'URL de callback enregistrée chez LengoPay pointe en HTTP sur
+    # l'IP, cette location doit rester. Elle pourra être supprimée après
+    # bascule de LENGOPAY_PUBLIC_BASE_URL vers https://__DOMAIN__ ET mise à
+    # jour de l'URL de callback côté LengoPay.
+    location ^~ /api/v1/payments/webhook {
+        set $kharandi_api "api:8000";
+        proxy_pass http://$kharandi_api;
+        include /etc/nginx/snippets/proxy_params.conf;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    30s;
+    }
+
+    location / {
+        return 301 https://__DOMAIN__$request_uri;
+    }
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3) HTTPS — service applicatif
+# ══════════════════════════════════════════════════════════════════════════════
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name __DOMAIN__;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    resolver_timeout 5s;
+
+    ssl_certificate     /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    client_max_body_size 50M;
+    charset utf-8;
+
+    access_log /var/log/nginx/kharandi.access.log;
+    error_log  /var/log/nginx/kharandi.error.log warn;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options        "SAMEORIGIN" always;
+    add_header Referrer-Policy        "strict-origin-when-cross-origin" always;
+
+    location /static/ {
+        alias /app/staticfiles/;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    location /media/ {
+        alias /app/media/;
+        expires 7d;
+        access_log off;
+    }
+
+    location = /nginx-health {
+        default_type text/plain;
+        access_log off;
+        return 200 "nginx ok\n";
+    }
+
+    location = /healthz {
+        set $kharandi_api "api:8000";
+        proxy_pass http://$kharandi_api/healthz;
+        include /etc/nginx/snippets/proxy_params.conf;
+        access_log off;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout    5s;
+    }
+
+    location = /readyz {
+        set $kharandi_api "api:8000";
+        proxy_pass http://$kharandi_api/readyz;
+        include /etc/nginx/snippets/proxy_params.conf;
+        access_log off;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout    10s;
+    }
+
+    # Flux SSE : Karamo (IA) + notifications
+    location ~ ^/api/v1/(ai/ask/stream|notifications/stream)/ {
+        set $kharandi_api "api:8000";
+        proxy_pass http://$kharandi_api;
+        include /etc/nginx/snippets/proxy_params.conf;
+        proxy_buffering    off;
+        proxy_cache        off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location / {
+        set $kharandi_api "api:8000";
+        proxy_pass http://$kharandi_api;
+        include /etc/nginx/snippets/proxy_params.conf;
+    }
+}
