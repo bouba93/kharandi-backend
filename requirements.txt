@@ -23,3 +23,4 @@ django-redis==5.4.0
 redis==5.0.8
 celery==5.3.6
 django-celery-results==2.5.1
+django-unfold>=0.50,<1.0

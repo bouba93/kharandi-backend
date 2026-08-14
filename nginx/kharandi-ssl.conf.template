@@ -56,7 +56,6 @@ server {
         proxy_pass http://$kharandi_api/healthz;
         include /etc/nginx/snippets/proxy_params.conf;
         access_log off;
-        proxy_connect_timeout 3s;
         proxy_read_timeout    5s;
     }
 
@@ -74,7 +73,6 @@ server {
         set $kharandi_api "api:8000";
         proxy_pass http://$kharandi_api;
         include /etc/nginx/snippets/proxy_params.conf;
-        proxy_connect_timeout 5s;
         proxy_read_timeout    30s;
     }
 
@@ -137,7 +135,6 @@ server {
         proxy_pass http://$kharandi_api/healthz;
         include /etc/nginx/snippets/proxy_params.conf;
         access_log off;
-        proxy_connect_timeout 3s;
         proxy_read_timeout    5s;
     }
 
@@ -146,7 +143,6 @@ server {
         proxy_pass http://$kharandi_api/readyz;
         include /etc/nginx/snippets/proxy_params.conf;
         access_log off;
-        proxy_connect_timeout 3s;
         proxy_read_timeout    10s;
     }
 

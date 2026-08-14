@@ -95,3 +95,20 @@ class TicketAdmin(admin.ModelAdmin):
 
 
 
+
+# ─────────────────────────────────────────────────────────────
+# Kharandi Dashboard
+# ─────────────────────────────────────────────────────────────
+
+from kharandi_backend.admin_dashboard import dashboard_stats
+
+_original_index = admin.site.index
+
+
+def kharandi_admin_index(request, extra_context=None):
+    extra_context = extra_context or {}
+    extra_context["dashboard_stats"] = dashboard_stats()
+    return _original_index(request, extra_context)
+
+
+admin.site.index = kharandi_admin_index

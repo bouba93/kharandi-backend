@@ -1,0 +1,320 @@
+{% extends "admin/base.html" %}
+{% load i18n unfold %}
+
+{% block content %}
+
+<div class="px-4 py-6 lg:px-8">
+
+    <!-- HEADER -->
+    <div class="mb-8">
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
+            Tableau de bord Kharandi
+        </h1>
+
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Vue générale de votre plateforme
+        </p>
+    </div>
+
+
+    <!-- STATISTIQUES -->
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+
+        {% include "admin/dashboard_card.html" with title="Utilisateurs" value=kharandi_dashboard.users icon="people" link="/admin/users/user/" %}
+        {% include "admin/dashboard_card.html" with title="Documents" value=kharandi_dashboard.documents icon="description" link="/admin/learning/document/" %}
+        {% include "admin/dashboard_card.html" with title="Commandes" value=kharandi_dashboard.orders icon="shopping_cart" link="/admin/ecommerce/order/" %}
+        {% include "admin/dashboard_card.html" with title="Revenus" value=kharandi_dashboard.revenue icon="payments" link="/admin/payments/transaction/" %}
+
+        {% include "admin/dashboard_card.html" with title="Abonnements" value=kharandi_dashboard.subscriptions icon="card_membership" link="/admin/payments/subscription/" %}
+        {% include "admin/dashboard_card.html" with title="Transactions" value=kharandi_dashboard.transactions icon="receipt_long" link="/admin/payments/transaction/" %}
+        {% include "admin/dashboard_card.html" with title="Tickets" value=kharandi_dashboard.tickets icon="support_agent" link="/admin/support/ticket/" %}
+        {% include "admin/dashboard_card.html" with title="Écoles" value=kharandi_dashboard.schools icon="school" link="/admin/ecole/school/" %}
+
+    </div>
+
+
+    <!-- KHARANDI ECOLE -->
+    <div class="mt-10">
+
+        <h2 class="mb-4 text-lg font-semibold text-gray-900 dark:text-white">
+            Kharandi École
+        </h2>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+
+            {% include "admin/dashboard_card.html" with title="Élèves" value=kharandi_dashboard.students icon="groups" link="/admin/ecole/schoolstudent/" %}
+
+            {% include "admin/dashboard_card.html" with title="Enseignants" value=kharandi_dashboard.teachers icon="person" link="/admin/ecole/schoolteacher/" %}
+
+        </div>
+
+    </div>
+
+
+    <!-- TABLEAUX -->
+    <div class="mt-10 grid grid-cols-1 gap-6 xl:grid-cols-2">
+
+
+        <!-- UTILISATEURS -->
+        <div class="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+
+            <div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-white/10">
+
+                <div>
+                    <h2 class="font-semibold text-gray-900 dark:text-white">
+                        Derniers utilisateurs
+                    </h2>
+
+                    <p class="text-xs text-gray-500">
+                        Les dernières inscriptions
+                    </p>
+                </div>
+
+                <a href="/admin/users/user/"
+                   class="text-sm font-medium text-primary-600 hover:text-primary-500">
+                    Voir tout
+                </a>
+
+            </div>
+
+
+            <div class="divide-y divide-gray-100 dark:divide-white/10">
+
+                {% for user in kharandi_dashboard.recent_users %}
+
+                <div class="flex items-center justify-between px-5 py-4">
+
+                    <div class="flex items-center gap-3">
+
+                        <div class="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800">
+                            <span class="material-symbols-outlined">
+                                person
+                            </span>
+                        </div>
+
+                        <div>
+                            <div class="text-sm font-medium text-gray-900 dark:text-white">
+                                {{ user.phone }}
+                            </div>
+
+                            <div class="text-xs text-gray-500">
+                                {{ user.role|default:"Utilisateur" }}
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <div class="text-xs text-gray-500">
+                        {{ user.date_joined|date:"d/m/Y" }}
+                    </div>
+
+                </div>
+
+                {% empty %}
+
+                <div class="px-5 py-8 text-center text-sm text-gray-500">
+                    Aucun utilisateur récent.
+                </div>
+
+                {% endfor %}
+
+            </div>
+
+        </div>
+
+
+        <!-- COMMANDES -->
+        <div class="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+
+            <div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-white/10">
+
+                <div>
+                    <h2 class="font-semibold text-gray-900 dark:text-white">
+                        Dernières commandes
+                    </h2>
+
+                    <p class="text-xs text-gray-500">
+                        Activité marketplace
+                    </p>
+                </div>
+
+                <a href="/admin/ecommerce/order/"
+                   class="text-sm font-medium text-primary-600 hover:text-primary-500">
+                    Voir tout
+                </a>
+
+            </div>
+
+
+            <div class="divide-y divide-gray-100 dark:divide-white/10">
+
+                {% for order in kharandi_dashboard.recent_orders %}
+
+                <div class="flex items-center justify-between px-5 py-4">
+
+                    <div>
+                        <div class="text-sm font-medium text-gray-900 dark:text-white">
+                            Commande #{{ order.id }}
+                        </div>
+
+                        <div class="text-xs text-gray-500">
+                            {{ order.user.phone|default:"Client" }}
+                        </div>
+                    </div>
+
+                    <div class="text-right">
+
+                        <div class="text-sm font-semibold text-gray-900 dark:text-white">
+                            {{ order.total }}
+                        </div>
+
+                        <div class="text-xs text-gray-500">
+                            {{ order.status }}
+                        </div>
+
+                    </div>
+
+                </div>
+
+                {% empty %}
+
+                <div class="px-5 py-8 text-center text-sm text-gray-500">
+                    Aucune commande récente.
+                </div>
+
+                {% endfor %}
+
+            </div>
+
+        </div>
+
+
+        <!-- TRANSACTIONS -->
+        <div class="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+
+            <div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-white/10">
+
+                <div>
+                    <h2 class="font-semibold text-gray-900 dark:text-white">
+                        Dernières transactions
+                    </h2>
+
+                    <p class="text-xs text-gray-500">
+                        Activité financière
+                    </p>
+                </div>
+
+                <a href="/admin/payments/transaction/"
+                   class="text-sm font-medium text-primary-600 hover:text-primary-500">
+                    Voir tout
+                </a>
+
+            </div>
+
+
+            <div class="divide-y divide-gray-100 dark:divide-white/10">
+
+                {% for transaction in kharandi_dashboard.recent_transactions %}
+
+                <div class="flex items-center justify-between px-5 py-4">
+
+                    <div>
+                        <div class="text-sm font-medium text-gray-900 dark:text-white">
+                            {{ transaction.reference }}
+                        </div>
+
+                        <div class="text-xs text-gray-500">
+                            {{ transaction.user.phone|default:"Client" }}
+                        </div>
+                    </div>
+
+                    <div class="text-right">
+
+                        <div class="text-sm font-semibold text-gray-900 dark:text-white">
+                            {{ transaction.amount }} {{ transaction.currency }}
+                        </div>
+
+                        <div class="text-xs text-gray-500">
+                            {{ transaction.status }}
+                        </div>
+
+                    </div>
+
+                </div>
+
+                {% empty %}
+
+                <div class="px-5 py-8 text-center text-sm text-gray-500">
+                    Aucune transaction récente.
+                </div>
+
+                {% endfor %}
+
+            </div>
+
+        </div>
+
+
+        <!-- SUPPORT -->
+        <div class="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+
+            <div class="flex items-center justify-between border-b border-gray-200 px-5 py-4 dark:border-white/10">
+
+                <div>
+                    <h2 class="font-semibold text-gray-900 dark:text-white">
+                        Tickets à traiter
+                    </h2>
+
+                    <p class="text-xs text-gray-500">
+                        Support client
+                    </p>
+
+                </div>
+
+                <a href="/admin/support/ticket/"
+                   class="text-sm font-medium text-primary-600 hover:text-primary-500">
+                    Voir tout
+                </a>
+
+            </div>
+
+
+            <div class="divide-y divide-gray-100 dark:divide-white/10">
+
+                {% for ticket in kharandi_dashboard.open_tickets %}
+
+                <div class="flex items-center justify-between px-5 py-4">
+
+                    <div>
+                        <div class="text-sm font-medium text-gray-900 dark:text-white">
+                            {{ ticket.title }}
+                        </div>
+
+                        <div class="text-xs text-gray-500">
+                            {{ ticket.user.phone|default:"Utilisateur" }}
+                        </div>
+                    </div>
+
+                    <div class="text-xs font-medium">
+                        {{ ticket.priority }}
+                    </div>
+
+                </div>
+
+                {% empty %}
+
+                <div class="px-5 py-8 text-center text-sm text-gray-500">
+                    🎉 Aucun ticket en attente.
+                </div>
+
+                {% endfor %}
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

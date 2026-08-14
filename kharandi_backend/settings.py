@@ -35,6 +35,7 @@ ALLOWED_HOSTS = list(dict.fromkeys(
 ))
 
 INSTALLED_APPS = [
+    "unfold",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -65,6 +66,224 @@ INSTALLED_APPS = [
     "grades",
 ]
 
+
+UNFOLD = {
+    "SITE_TITLE": "Kharandi Admin",
+    "SITE_HEADER": "Kharandi",
+    "SITE_SUBHEADER": "Administration Platform",
+    "SITE_SYMBOL": "school",
+
+    "SHOW_HISTORY": True,
+    "SHOW_VIEW_ON_SITE": True,
+    "SHOW_BACK_BUTTON": True,
+
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": False,
+
+        "navigation": [
+            {
+                "title": "Kharandi",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Tableau de bord",
+                        "icon": "dashboard",
+                        "link": "/admin/",
+                    },
+                    {
+                        "title": "Utilisateurs",
+                        "icon": "people",
+                        "link": "/admin/users/user/",
+                    },
+                    {
+                        "title": "Profils",
+                        "icon": "badge",
+                        "link": "/admin/users/profile/",
+                    },
+                ],
+            },
+
+            {
+                "title": "Éducation",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Documents",
+                        "icon": "description",
+                        "link": "/admin/learning/document/",
+                    },
+                    {
+                        "title": "Matières",
+                        "icon": "menu_book",
+                        "link": "/admin/learning/subject/",
+                    },
+                    {
+                        "title": "QCM",
+                        "icon": "quiz",
+                        "link": "/admin/learning/qcm/",
+                    },
+                ],
+            },
+
+            {
+                "title": "Finance",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Plans",
+                        "icon": "payments",
+                        "link": "/admin/payments/plan/",
+                    },
+                    {
+                        "title": "Abonnements",
+                        "icon": "card_membership",
+                        "link": "/admin/payments/subscription/",
+                    },
+                    {
+                        "title": "Transactions",
+                        "icon": "receipt_long",
+                        "link": "/admin/payments/transaction/",
+                    },
+                    {
+                        "title": "Commandes",
+                        "icon": "shopping_cart",
+                        "link": "/admin/ecommerce/order/",
+                    },
+                ],
+            },
+
+            {
+                "title": "Marketplace",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Produits",
+                        "icon": "inventory_2",
+                        "link": "/admin/marketplace/product/",
+                    },
+                    {
+                        "title": "Commandes vendeurs",
+                        "icon": "store",
+                        "link": "/admin/marketplace/order/",
+                    },
+                ],
+            },
+
+            {
+                "title": "Kharandi École",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Écoles",
+                        "icon": "school",
+                        "link": "/admin/ecole/school/",
+                    },
+                    {
+                        "title": "Enseignants",
+                        "icon": "person",
+                        "link": "/admin/ecole/schoolteacher/",
+                    },
+                    {
+                        "title": "Élèves",
+                        "icon": "groups",
+                        "link": "/admin/ecole/schoolstudent/",
+                    },
+                    {
+                        "title": "Classes",
+                        "icon": "class",
+                        "link": "/admin/ecole/schoolclass/",
+                    },
+                    {
+                        "title": "Notes",
+                        "icon": "grade",
+                        "link": "/admin/ecole/schoolgrade/",
+                    },
+                    {
+                        "title": "Paiements",
+                        "icon": "account_balance_wallet",
+                        "link": "/admin/ecole/schoolpayment/",
+                    },
+                    {
+                        "title": "Absences",
+                        "icon": "event_busy",
+                        "link": "/admin/ecole/schoolabsence/",
+                    },
+                ],
+            },
+
+            {
+                "title": "Intelligence artificielle",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Base de connaissances",
+                        "icon": "psychology",
+                        "link": "/admin/ai_features/guineaknowledgeentry/",
+                    },
+                ],
+            },
+
+            {
+                "title": "Support",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Tickets",
+                        "icon": "support_agent",
+                        "link": "/admin/support/ticket/",
+                    },
+                ],
+            },
+
+            {
+                "title": "Contenu",
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": "Actualités",
+                        "icon": "article",
+                        "link": "/admin/content/news/",
+                    },
+                    {
+                        "title": "Bourses",
+                        "icon": "school",
+                        "link": "/admin/content/scholarship/",
+                    },
+                    {
+                        "title": "Classements scolaires",
+                        "icon": "leaderboard",
+                        "link": "/admin/content/schoolranking/",
+                    },
+                    {
+                        "title": "Étudier à l'étranger",
+                        "icon": "flight",
+                        "link": "/admin/content/studyabroad/",
+                    },
+                    {
+                        "title": "Annonces répétiteurs",
+                        "icon": "campaign",
+                        "link": "/admin/content/tutorad/",
+                    },
+                    {
+                        "title": "Notifications",
+                        "icon": "notifications",
+                        "link": "/admin/content/notification/",
+                    },
+                ],
+            },
+        ],
+    },
+}
+
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "core.middleware.RateLimitMiddleware",
@@ -87,6 +306,7 @@ TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates",
                    "django.template.context_processors.request",
                    "django.contrib.auth.context_processors.auth",
                    "django.contrib.messages.context_processors.messages",
+                   "kharandi_backend.admin_context.admin_dashboard",
                ]}}]
 
 WSGI_APPLICATION = "kharandi_backend.wsgi.application"
