@@ -65,7 +65,7 @@
                         Derniers utilisateurs
                     </h2>
 
-                    <p class="text-xs text-gray-500">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
                         Les dernières inscriptions
                     </p>
                 </div>
@@ -97,14 +97,14 @@
                                 {{ user.phone }}
                             </div>
 
-                            <div class="text-xs text-gray-500">
+                            <div class="text-xs text-gray-500 dark:text-gray-400">
                                 {{ user.role|default:"Utilisateur" }}
                             </div>
                         </div>
 
                     </div>
 
-                    <div class="text-xs text-gray-500">
+                    <div class="text-xs text-gray-500 dark:text-gray-400">
                         {{ user.date_joined|date:"d/m/Y" }}
                     </div>
 
@@ -133,7 +133,7 @@
                         Dernières commandes
                     </h2>
 
-                    <p class="text-xs text-gray-500">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
                         Activité marketplace
                     </p>
                 </div>
@@ -157,7 +157,7 @@
                             Commande #{{ order.id }}
                         </div>
 
-                        <div class="text-xs text-gray-500">
+                        <div class="text-xs text-gray-500 dark:text-gray-400">
                             {{ order.user.phone|default:"Client" }}
                         </div>
                     </div>
@@ -168,7 +168,7 @@
                             {{ order.total }}
                         </div>
 
-                        <div class="text-xs text-gray-500">
+                        <div class="text-xs text-gray-500 dark:text-gray-400">
                             {{ order.status }}
                         </div>
 
@@ -199,7 +199,7 @@
                         Dernières transactions
                     </h2>
 
-                    <p class="text-xs text-gray-500">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
                         Activité financière
                     </p>
                 </div>
@@ -223,7 +223,7 @@
                             {{ transaction.reference }}
                         </div>
 
-                        <div class="text-xs text-gray-500">
+                        <div class="text-xs text-gray-500 dark:text-gray-400">
                             {{ transaction.user.phone|default:"Client" }}
                         </div>
                     </div>
@@ -234,7 +234,7 @@
                             {{ transaction.amount }} {{ transaction.currency }}
                         </div>
 
-                        <div class="text-xs text-gray-500">
+                        <div class="text-xs text-gray-500 dark:text-gray-400">
                             {{ transaction.status }}
                         </div>
 
@@ -265,7 +265,7 @@
                         Tickets à traiter
                     </h2>
 
-                    <p class="text-xs text-gray-500">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
                         Support client
                     </p>
 
@@ -290,7 +290,7 @@
                             {{ ticket.title }}
                         </div>
 
-                        <div class="text-xs text-gray-500">
+                        <div class="text-xs text-gray-500 dark:text-gray-400">
                             {{ ticket.user.phone|default:"Utilisateur" }}
                         </div>
                     </div>

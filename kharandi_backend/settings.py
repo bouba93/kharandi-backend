@@ -658,8 +658,8 @@ CELERY_BEAT_SCHEDULE = {
 
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
 RATE_LIMIT_ENABLED = True
-RATE_LIMIT_PER_MIN = 60
-RATE_LIMIT_AI_MIN  = 10
+RATE_LIMIT_PER_MIN = 300
+RATE_LIMIT_AI_MIN  = 60
 SCHOOL_TOKEN_MAX_AGE = env.int("SCHOOL_TOKEN_MAX_AGE", default=12 * 60 * 60)
 
 # ─── Reverse proxy / VPS YIGUI ────────────────────────────────────────────────

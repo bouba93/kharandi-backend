@@ -15,7 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
-KARAMO_FREE_DAILY_LIMIT = 5       # messages gratuits / jour
+KARAMO_FREE_DAILY_LIMIT = 50       # messages gratuits / jour
 OTP_TTL                 = 300     # 5 minutes
 SUBSCRIPTION_TTL        = 600     # 10 minutes
 BAC_SUBJECTS_TTL        = 3600    # 1 heure

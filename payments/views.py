@@ -22,7 +22,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from core.permissions import WebhookPermission, IsAdmin
-from core.utils import success_response, error_response
+from core.utils import (
+    success_response,
+    error_response,
+    API_EXCEPTIONS,
+    internal_error_response,
+)
 from .models import Plan, PaymentCallback, Subscription, Transaction
 from .serializers import PlanSerializer, PaymentInitiateSerializer, TransactionSerializer
 from .lengopay import (
@@ -125,19 +130,47 @@ def _call_lengopay(amount, currency, reference):
 
 
 def _get_plan(plan_id_or_name: str):
-    """Résout un plan par UUID ou par nom/alias."""
+    """
+    Résout un plan par UUID ou par alias commercial Kharandi.
+
+    Alias officiels :
+      gratuit     → Gratuit
+      eleve       → Élève / Étudiant
+      etudiant    → Élève / Étudiant
+      palmares     → Palmarès National des Écoles
+      repetiteur   → Forfait Standard Répétiteur
+      boutique     → Forfait Standard Boutique
+
+    Les anciens alias sont conservés uniquement pour compatibilité historique.
+    Ils ne pointent plus vers les anciens plans commerciaux.
+    """
+    value = str(plan_id_or_name or "").strip()
+
+    if not value:
+        return None
+
+    # Résolution directe par UUID.
     try:
-        return Plan.objects.get(id=plan_id_or_name, is_active=True)
-    except Exception:
+        plan = Plan.objects.get(id=value, is_active=True)
+        return plan
+    except (Plan.DoesNotExist, ValueError, TypeError):
         pass
+
     name_map = {
-        "seller":    "Boutique Vendeur",
-        "boutique":  "Boutique Vendeur",
-        "mensuel":   "Premium Mensuel",
-        "annuel":    "Premium Annuel",
-        "gratuit":   "Gratuit",
+        "gratuit": "Gratuit",
+
+        "eleve": "Élève / Étudiant",
+        "etudiant": "Élève / Étudiant",
+
+        "palmares": "Palmarès National des Écoles",
+
+        "repetiteur": "Forfait Standard Répétiteur",
+
+        "boutique": "Forfait Standard Boutique",
     }
-    mapped = name_map.get(plan_id_or_name.lower(), plan_id_or_name)
+
+    mapped = name_map.get(value.lower(), value)
+
     try:
         return Plan.objects.get(name__iexact=mapped, is_active=True)
     except Plan.DoesNotExist:
@@ -241,17 +274,30 @@ class SubscriptionStatusView(APIView):
 # ─── POST /payments/subscriptions/initiate/ ──────────────────────────────────
 class SubscriptionInitiateView(APIView):
     """
-    Body : { plan_id: "UUID" | "seller" | "mensuel" | "annuel", currency: "GNF" }
+    Initie un abonnement Kharandi.
+
+    Body :
+        {
+            "plan_id": "eleve|palmares|repetiteur|boutique|gratuit|UUID",
+            "currency": "GNF"
+        }
     """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
-            plan_id  = request.data.get("plan_id", "")
-            currency = request.data.get("currency", settings.LENGOPAY_CURRENCY)
+            plan_id = request.data.get("plan_id", "")
+            currency = request.data.get(
+                "currency",
+                settings.LENGOPAY_CURRENCY,
+            )
 
             if not plan_id:
-                return error_response("plan_id est obligatoire.", status=400)
+                return error_response(
+                    "plan_id est obligatoire.",
+                    status=400,
+                )
 
             plan = _get_plan(str(plan_id))
 
@@ -260,81 +306,161 @@ class SubscriptionInitiateView(APIView):
                     f"Plan '{plan_id}' introuvable.",
                     status=404,
                 )
+
             final_amount = Decimal(plan.price)
 
-            # Plan gratuit → activer directement
+            # Plan gratuit : activation immédiate.
             if final_amount == Decimal("0"):
-                sub, _ = Subscription.objects.get_or_create(user=request.user)
-                sub.plan = plan; sub.status = Subscription.Status.ACTIVE
-                sub.start_date = timezone.now(); sub.end_date = None
+                sub, _ = Subscription.objects.get_or_create(
+                    user=request.user
+                )
+
+                sub.plan = plan
+                sub.status = Subscription.Status.ACTIVE
+                sub.start_date = timezone.now()
+                sub.end_date = None
                 sub.save()
-                return success_response(data={"is_premium": False}, message="Plan gratuit activé.")
+
+                return success_response(
+                    data={
+                        "is_premium": False,
+                        "plan": PlanSerializer(plan).data,
+                    },
+                    message="Plan gratuit activé.",
+                )
 
             ref = _gen_ref()
-            sub, _ = Subscription.objects.get_or_create(user=request.user)
+
+            sub, _ = Subscription.objects.get_or_create(
+                user=request.user
+            )
+
             sub.plan = plan
             sub.status = Subscription.Status.PENDING
             sub.save(update_fields=["plan", "status"])
 
             tx = Transaction.objects.create(
-                user=request.user, subscription=sub, reference=ref,
-                amount=final_amount, currency=plan.currency,
-                provider=Transaction.Provider.LENGOPAY, phone=request.user.phone or "",
+                user=request.user,
+                subscription=sub,
+                reference=ref,
+                amount=final_amount,
+                currency=plan.currency,
+                provider=Transaction.Provider.LENGOPAY,
+                phone=request.user.phone or "",
             )
 
-            result = _call_lengopay(final_amount, plan.currency, ref)
+            result = _call_lengopay(
+                final_amount,
+                plan.currency,
+                ref,
+            )
+
             if not result["success"]:
                 return error_response(
                     "Impossible de générer le lien de paiement.",
-                    errors=result.get("error"), status=502,
+                    errors=result.get("error"),
+                    status=502,
                 )
 
             tx.gateway_ref = result["pay_id"]
             tx.save(update_fields=["gateway_ref"])
 
-            # Le callback peut arriver avant cette ligne (Mobile Money quasi
-            # instantané) : on rejoue immédiatement toute notification déjà
-            # reçue pour ce pay_id.
+            # Le callback peut arriver avant cette ligne.
             if claim_orphan_callbacks(tx):
                 try:
                     from .cron import replay_orphan_callbacks
                     replay_orphan_callbacks(pay_id=tx.gateway_ref)
                 except Exception:
                     logger.exception(
-                        "Rejeu du callback orphelin impossible pour %s.", tx.reference
+                        "Rejeu du callback orphelin impossible pour %s.",
+                        tx.reference,
                     )
 
             return success_response(
-                data={"reference": ref, "pay_id": result["pay_id"],
-                      "payment_url": result["payment_url"]},
+                data={
+                    "reference": ref,
+                    "pay_id": result["pay_id"],
+                    "payment_url": result["payment_url"],
+                    "plan": PlanSerializer(plan).data,
+                },
                 status=201,
             )
-        except Exception as exc:
-            logger.error("ERREUR paiement : %s", traceback.format_exc())
-            return error_response(f"Erreur interne : {str(exc)}", status=500)
+
+        except API_EXCEPTIONS:
+            # Validation / 400 / 403 / 404 / autres erreurs DRF :
+            # laisser DRF appliquer le custom_exception_handler.
+            raise
+
+        except Exception:
+            return internal_error_response(
+                logger,
+                "initiation d'un abonnement",
+                message="Impossible de démarrer l'abonnement.",
+            )
 
 
 # ─── POST /payments/initiate/ ────────────────────────────────────────────────
 class PaymentInitiateView(APIView):
+    """
+    Paiement d'une commande boutique.
+
+    Body obligatoire :
+        {
+            "order_id": "<UUID>"
+        }
+
+    Pour un abonnement, utiliser :
+        POST /payments/subscriptions/initiate/
+    """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        # Aiguillage explicite : éviter qu'un abonnement soit interprété
+        # comme une commande ecommerce.
+        if (
+            request.data.get("plan_id")
+            or request.data.get("plan")
+        ) and not request.data.get("order_id"):
+            return error_response(
+                "Cet endpoint règle une commande boutique. "
+                "Pour un abonnement, utilisez "
+                "/api/v1/payments/subscriptions/initiate/ "
+                'avec {"plan_id": "eleve|palmares|repetiteur|boutique|gratuit"}.',
+                status=400,
+            )
+
         try:
             s = PaymentInitiateSerializer(data=request.data)
             s.is_valid(raise_exception=True)
+
             data = s.validated_data
+
             from ecommerce.models import Order
+
             try:
                 order = Order.objects.get(
-                    id=data["order_id"], user=request.user, status=Order.Status.PENDING
+                    id=data["order_id"],
+                    user=request.user,
+                    status=Order.Status.PENDING,
                 )
             except Order.DoesNotExist:
-                return error_response("Commande introuvable ou déjà traitée.", status=404)
+                return error_response(
+                    "Commande introuvable ou déjà traitée.",
+                    status=404,
+                )
+
             if order.total <= 0:
-                return error_response("Montant de commande invalide.", status=400)
-            ref  = _gen_ref()
-            tx   = Transaction.objects.create(
-                user=request.user, reference=ref,
+                return error_response(
+                    "Montant de commande invalide.",
+                    status=400,
+                )
+
+            ref = _gen_ref()
+
+            tx = Transaction.objects.create(
+                user=request.user,
+                reference=ref,
                 amount=order.total,
                 currency=order.currency,
                 provider=Transaction.Provider.LENGOPAY,
@@ -347,31 +473,46 @@ class PaymentInitiateView(APIView):
                 order.currency,
                 ref,
             )
+
             if not result["success"]:
-                return error_response("Impossible de générer le lien.", errors=result.get("error"), status=502)
+                return error_response(
+                    "Impossible de générer le lien.",
+                    errors=result.get("error"),
+                    status=502,
+                )
 
             tx.gateway_ref = result["pay_id"]
             tx.save(update_fields=["gateway_ref"])
 
-            # Le callback peut arriver avant cette ligne (Mobile Money quasi
-            # instantané) : on rejoue immédiatement toute notification déjà
-            # reçue pour ce pay_id.
             if claim_orphan_callbacks(tx):
                 try:
                     from .cron import replay_orphan_callbacks
                     replay_orphan_callbacks(pay_id=tx.gateway_ref)
                 except Exception:
                     logger.exception(
-                        "Rejeu du callback orphelin impossible pour %s.", tx.reference
+                        "Rejeu du callback orphelin impossible pour %s.",
+                        tx.reference,
                     )
+
             return success_response(
-                data={"reference": ref, "pay_id": result["pay_id"],
-                      "payment_url": result["payment_url"], "transaction_id": str(tx.id)},
+                data={
+                    "reference": ref,
+                    "pay_id": result["pay_id"],
+                    "payment_url": result["payment_url"],
+                    "transaction_id": str(tx.id),
+                },
                 status=201,
             )
-        except Exception as exc:
-            logger.error("ERREUR paiement commande : %s", traceback.format_exc())
-            return error_response(f"Erreur interne : {str(exc)}", status=500)
+
+        except API_EXCEPTIONS:
+            raise
+
+        except Exception:
+            return internal_error_response(
+                logger,
+                "initiation d'un paiement de commande",
+                message="Impossible de démarrer le paiement.",
+            )
 
 
 # ─── POST /payments/webhook/ ─────────────────────────────────────────────────
