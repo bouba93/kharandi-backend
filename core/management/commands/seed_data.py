@@ -11,15 +11,97 @@ class Command(BaseCommand):
 
     def _seed_plans(self):
         from payments.models import Plan
+
         plans = [
-            {"name": "Gratuit",         "period": "GRATUIT", "price": 0,      "currency": "GNF", "features": ["Accès aux documents gratuits", "5 QCM par mois"]},
-            {"name": "Premium Mensuel", "period": "MENSUEL",  "price": 25000,  "currency": "GNF", "features": ["Accès illimité", "QCM illimités", "IA Tutor", "PDF"]},
-            {"name": "Premium Annuel",  "period": "ANNUEL",   "price": 250000, "currency": "GNF", "features": ["Accès illimité", "QCM illimités", "IA Tutor", "PDF", "2 mois offerts"]},
-            {"name": "Boutique Vendeur","period": "SEMESTRIEL","price": 50000, "currency": "GNF", "features": ["Boutique visible", "Vente produits scolaires", "Gestion stocks"]},
+            {
+                "name": "Gratuit",
+                "period": "GRATUIT",
+                "price": 0,
+                "currency": "GNF",
+                "features": [
+                    "Accès aux documents gratuits",
+                    "5 QCM par mois",
+                ],
+            },
+            {
+                "name": "Élève / Étudiant",
+                "period": "ANNUEL",
+                "price": 45000,
+                "currency": "GNF",
+                "features": [
+                    "Accès illimité aux contenus",
+                    "QCM illimités",
+                    "IA Tutor",
+                    "PDF",
+                ],
+            },
+            {
+                "name": "Palmarès National des Écoles",
+                "period": "ANNUEL",
+                "price": 250000,
+                "currency": "GNF",
+                "features": [
+                    "Accès au Palmarès National des Écoles",
+                    "Consultation des établissements",
+                    "Informations détaillées",
+                ],
+            },
+            {
+                "name": "Forfait Standard Répétiteur",
+                "period": "SEMESTRIEL",
+                "price": 50000,
+                "currency": "GNF",
+                "features": [
+                    "Profil répétiteur",
+                    "Visibilité auprès des élèves",
+                    "Gestion des cours",
+                ],
+            },
+            {
+                "name": "Forfait Standard Boutique",
+                "period": "SEMESTRIEL",
+                "price": 50000,
+                "currency": "GNF",
+                "features": [
+                    "Boutique visible",
+                    "Vente de produits scolaires",
+                    "Gestion des stocks",
+                ],
+            },
         ]
-        for p in plans:
-            obj, created = Plan.objects.get_or_create(name=p["name"], defaults=p)
-            self.stdout.write(f"  Plan '{obj.name}' — {'créé' if created else 'existant'}")
+
+        for plan_data in plans:
+            obj, created = Plan.objects.update_or_create(
+                name=plan_data["name"],
+                defaults={
+                    "period": plan_data["period"],
+                    "price": plan_data["price"],
+                    "currency": plan_data["currency"],
+                    "features": plan_data["features"],
+                    "is_active": True,
+                },
+            )
+
+            self.stdout.write(
+                f"  Plan '{obj.name}' — "
+                f"{'créé' if created else 'mis à jour'}"
+            )
+
+        # Les anciens plans restent en base pour préserver
+        # les références historiques, mais ne sont plus commercialisés.
+        Plan.objects.filter(
+            name__in=[
+                "Premium Mensuel",
+                "Premium Annuel",
+                "Boutique Vendeur",
+            ]
+        ).update(is_active=False)
+
+        self.stdout.write(
+            self.style.WARNING(
+                "  Anciens plans Premium/Boutique Vendeur désactivés."
+            )
+        )
 
     def _seed_subjects(self):
         from learning.models import Subject
