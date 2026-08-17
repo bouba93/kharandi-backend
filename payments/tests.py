@@ -813,3 +813,231 @@ class VerrouTachesTests(TestCase):
         with patch("payments.tasks.cache.add", side_effect=Exception("cache muet")):
             with verrou("essai-panne") as obtenu:
                 self.assertTrue(obtenu)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Codes HTTP de l'initiation de paiement
+#
+#  Contexte : en production, POST /api/v1/payments/initiate/ renvoyait un
+#  « 500 Internal Server Error » dès que le corps de la requête ne contenait pas
+#  un order_id valide. Cause : le bloc « except Exception » de la vue capturait
+#  la ValidationError de DRF (qui doit produire un 400) avant le gestionnaire
+#  d'exceptions de DRF. Un frontend appelant cet endpoint pour un abonnement
+#  recevait donc un 500 au lieu d'un message exploitable.
+# ═════════════════════════════════════════════════════════════════════════════
+class CodesHttpInitiationTests(TestCase):
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(
+            phone="622111000", password="MotDePasse123"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    # ── /payments/initiate/ : validation ─────────────────────────────────────
+    def test_initiate_sans_order_id_renvoie_400_et_non_500(self):
+        r = self.client.post("/api/v1/payments/initiate/", {}, format="json")
+        self.assertEqual(r.status_code, 400, r.data)
+
+    def test_initiate_avec_order_id_non_uuid_renvoie_400(self):
+        r = self.client.post(
+            "/api/v1/payments/initiate/", {"order_id": "pas-un-uuid"}, format="json"
+        )
+        self.assertEqual(r.status_code, 400, r.data)
+
+    def test_initiate_avec_plan_id_oriente_vers_le_bon_endpoint(self):
+        """Le cas rencontré en production : le frontend envoie plan_id ici."""
+        r = self.client.post(
+            "/api/v1/payments/initiate/", {"plan_id": "mensuel"}, format="json"
+        )
+        self.assertEqual(r.status_code, 400, r.data)
+        self.assertIn("subscriptions/initiate", r.data["message"])
+
+    def test_initiate_avec_commande_inexistante_renvoie_404(self):
+        r = self.client.post(
+            "/api/v1/payments/initiate/",
+            {"order_id": "00000000-0000-4000-8000-000000000000"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 404, r.data)
+
+    def test_initiate_sans_authentification_renvoie_401(self):
+        from rest_framework.test import APIClient
+
+        r = APIClient().post("/api/v1/payments/initiate/", {}, format="json")
+        self.assertEqual(r.status_code, 401, r.data)
+
+    # ── /payments/subscriptions/initiate/ ────────────────────────────────────
+    def test_abonnement_sans_plan_id_renvoie_400(self):
+        r = self.client.post(
+            "/api/v1/payments/subscriptions/initiate/", {}, format="json"
+        )
+        self.assertEqual(r.status_code, 400, r.data)
+
+    def test_abonnement_plan_inconnu_renvoie_404(self):
+        r = self.client.post(
+            "/api/v1/payments/subscriptions/initiate/",
+            {"plan_id": "plan-qui-nexiste-pas"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 404, r.data)
+
+    # ── Aucune fuite d'information sur une vraie panne ───────────────────────
+    def test_une_panne_reelle_renvoie_500_sans_divulguer_lexception(self):
+        Plan.objects.create(
+            name="Premium Mensuel", period=Plan.Period.MENSUEL,
+            price=Decimal("25000"), currency="GNF",
+        )
+        with patch(
+            "payments.views.Transaction.objects.create",
+            side_effect=RuntimeError("mot de passe base = secret-a-ne-pas-fuiter"),
+        ):
+            r = self.client.post(
+                "/api/v1/payments/subscriptions/initiate/",
+                {"plan_id": "mensuel"},
+                format="json",
+            )
+        self.assertEqual(r.status_code, 500, r.data)
+        corps = str(r.data)
+        self.assertNotIn("secret-a-ne-pas-fuiter", corps)
+        self.assertNotIn("RuntimeError", corps)
+        # Une référence d'incident doit permettre de retrouver la trace complète
+        # dans les journaux du conteneur.
+        self.assertIn("incident", r.data)
+        self.assertEqual(len(r.data["incident"]), 12)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Amorçage des plans d'abonnement
+#
+#  La table payments_plan est vide sur une base neuve : aucune migration ne la
+#  remplit. Sans plan, tout abonnement échoue en 404 « Plan introuvable ».
+# ═════════════════════════════════════════════════════════════════════════════
+class AmorcagePlansTests(TestCase):
+    def _seed(self, *args):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        sortie = StringIO()
+        call_command("seed_plans", *args, stdout=sortie)
+        return sortie.getvalue()
+
+    def test_amorcage_cree_les_plans_attendus_par_le_frontend(self):
+        self.assertEqual(Plan.objects.count(), 0)
+        self._seed()
+        noms = set(Plan.objects.values_list("name", flat=True))
+        self.assertEqual(
+            noms,
+            {"Gratuit", "Premium Mensuel", "Premium Annuel", "Boutique Vendeur"},
+        )
+
+    def test_les_alias_du_frontend_resolvent_apres_amorcage(self):
+        from .views import _get_plan
+
+        self._seed()
+        for alias in ["mensuel", "annuel", "seller", "boutique", "gratuit"]:
+            self.assertIsNotNone(_get_plan(alias), f"alias « {alias} » non résolu")
+
+    def test_amorcage_rejoue_ne_cree_pas_de_doublon(self):
+        self._seed()
+        n = Plan.objects.count()
+        self._seed()
+        self._seed()
+        self.assertEqual(Plan.objects.count(), n)
+
+    def test_amorcage_ne_modifie_pas_un_tarif_existant_sans_option(self):
+        Plan.objects.create(
+            name="Premium Mensuel", period=Plan.Period.MENSUEL,
+            price=Decimal("9999"), currency="GNF",
+        )
+        self._seed()
+        self.assertEqual(
+            Plan.objects.get(name="Premium Mensuel").price, Decimal("9999")
+        )
+
+    def test_option_maj_tarifs_aligne_le_prix(self):
+        Plan.objects.create(
+            name="Premium Mensuel", period=Plan.Period.MENSUEL,
+            price=Decimal("9999"), currency="GNF",
+        )
+        self._seed("--maj-tarifs")
+        self.assertEqual(
+            Plan.objects.get(name="Premium Mensuel").price, Decimal("25000")
+        )
+
+    def test_mode_simulation_necrit_rien(self):
+        self._seed("--simulation")
+        self.assertEqual(Plan.objects.count(), 0)
+
+    def test_amorcage_ne_supprime_aucun_plan_existant(self):
+        maison = Plan.objects.create(
+            name="Offre Spéciale Lycée", period=Plan.Period.SEMESTRIEL,
+            price=Decimal("120000"), currency="GNF",
+        )
+        self._seed("--maj-tarifs")
+        maison.refresh_from_db()
+        self.assertTrue(Plan.objects.filter(id=maison.id).exists())
+        self.assertEqual(maison.price, Decimal("120000"))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Parcours complet d'abonnement, une fois les plans amorcés
+# ═════════════════════════════════════════════════════════════════════════════
+class ParcoursAbonnementTests(TestCase):
+    def setUp(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("seed_plans", stdout=StringIO())
+        self.user = User.objects.create_user(
+            phone="622222000", password="MotDePasse123"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_les_plans_sont_visibles_par_le_frontend(self):
+        r = self.client.get("/api/v1/payments/plans/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data["data"]), 4)
+
+    def test_plan_gratuit_active_sans_paiement(self):
+        r = self.client.post(
+            "/api/v1/payments/subscriptions/initiate/",
+            {"plan_id": "gratuit"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(
+            Subscription.objects.get(user=self.user).status,
+            Subscription.Status.ACTIVE,
+        )
+
+    def test_plan_payant_produit_un_lien_de_paiement(self):
+        reponse = _Reponse(
+            200, {"status": "success", "pay_id": PAY_ID,
+                  "payment_url": "https://portal.lengopay.com/p/abc"}
+        )
+        with patch("payments.lengopay.requests.post", return_value=reponse):
+            r = self.client.post(
+                "/api/v1/payments/subscriptions/initiate/",
+                {"plan_id": "mensuel"},
+                format="json",
+            )
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["data"]["pay_id"], PAY_ID)
+        tx = Transaction.objects.get(user=self.user)
+        self.assertEqual(tx.amount, Decimal("25000"))
+        self.assertEqual(tx.gateway_ref, PAY_ID)
+
+    def test_lengopay_injoignable_renvoie_502_et_non_500(self):
+        with patch("payments.lengopay.requests.post", side_effect=_api_muette):
+            r = self.client.post(
+                "/api/v1/payments/subscriptions/initiate/",
+                {"plan_id": "mensuel"},
+                format="json",
+            )
+        self.assertEqual(r.status_code, 502, r.data)

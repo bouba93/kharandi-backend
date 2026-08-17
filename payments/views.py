@@ -22,7 +22,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from core.permissions import WebhookPermission, IsAdmin
-from core.utils import success_response, error_response
+from core.utils import (
+    API_EXCEPTIONS,
+    error_response,
+    internal_error_response,
+    success_response,
+)
 from .models import Plan, PaymentCallback, Subscription, Transaction
 from .serializers import PlanSerializer, PaymentInitiateSerializer, TransactionSerializer
 from .lengopay import (
@@ -309,9 +314,16 @@ class SubscriptionInitiateView(APIView):
                       "payment_url": result["payment_url"]},
                 status=201,
             )
-        except Exception as exc:
-            logger.error("ERREUR paiement : %s", traceback.format_exc())
-            return error_response(f"Erreur interne : {str(exc)}", status=500)
+        except API_EXCEPTIONS:
+            # 400/403/404/429… : laisser DRF produire le bon code HTTP.
+            raise
+        except Exception:
+            return internal_error_response(
+                logger,
+                "initiation d'un abonnement",
+                message="Impossible de démarrer l'abonnement. Réessayez ou "
+                        "contactez le support en indiquant la référence d'incident.",
+            )
 
 
 # ─── POST /payments/initiate/ ────────────────────────────────────────────────
@@ -320,6 +332,20 @@ class PaymentInitiateView(APIView):
 
     def post(self, request):
         try:
+            # Aiguillage explicite : cet endpoint règle une commande de la
+            # boutique, pas un abonnement. Sans ce contrôle, un frontend qui
+            # envoie plan_id reçoit une erreur de validation sur order_id, très
+            # difficile à interpréter côté client.
+            if not request.data.get("order_id") and (
+                request.data.get("plan_id") or request.data.get("plan")
+            ):
+                return error_response(
+                    "Cet endpoint règle une commande de la boutique et attend "
+                    "« order_id ». Pour un abonnement, appelez "
+                    "POST /api/v1/payments/subscriptions/initiate/ avec « plan_id ».",
+                    status=400,
+                )
+
             s = PaymentInitiateSerializer(data=request.data)
             s.is_valid(raise_exception=True)
             data = s.validated_data
@@ -369,9 +395,16 @@ class PaymentInitiateView(APIView):
                       "payment_url": result["payment_url"], "transaction_id": str(tx.id)},
                 status=201,
             )
-        except Exception as exc:
-            logger.error("ERREUR paiement commande : %s", traceback.format_exc())
-            return error_response(f"Erreur interne : {str(exc)}", status=500)
+        except API_EXCEPTIONS:
+            # 400/403/404/429… : laisser DRF produire le bon code HTTP.
+            raise
+        except Exception:
+            return internal_error_response(
+                logger,
+                "initiation d'un paiement de commande",
+                message="Impossible de démarrer le paiement. Réessayez ou "
+                        "contactez le support en indiquant la référence d'incident.",
+            )
 
 
 # ─── POST /payments/webhook/ ─────────────────────────────────────────────────

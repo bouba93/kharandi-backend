@@ -274,6 +274,11 @@ class RewardLogicTests(TestCase):
         self.assertEqual(user.profile.points_in_gnf, 5000)
 
 
+# Le quota est épinglé à 5 pour cette classe : les assertions ci-dessous portent
+# sur la MÉCANIQUE de débit et de remboursement, pas sur la valeur commerciale du
+# quota (pilotée par KARAMO_FREE_DAILY_LIMIT dans l'environnement). Sans cet
+# épinglage, changer le quota en production casserait ces tests à tort.
+@override_settings(KARAMO_FREE_DAILY_LIMIT=5)
 class KaramoSafetyTests(TestCase):
     def setUp(self):
         self.user = make_user("+224600000060")
@@ -291,12 +296,23 @@ class KaramoSafetyTests(TestCase):
             for index in range(1, 11)
         ]
 
-    def test_invalid_chat_history_does_not_consume_quota(self):
-        response = self.client.post(
-            "/api/v1/ai/ask/",
-            {"message": "Bonjour", "history": "pas-une-liste"},
-            format="json",
-        )
+    def test_malformed_history_is_normalised_not_rejected(self):
+        """Un historique mal formé est du contexte : il est ignoré, pas refusé.
+
+        Avant correctif, `history` non conforme renvoyait un HTTP 400 et Karamo
+        devenait inutilisable dès que le client changeait de format.
+        """
+        with patch("ai_features.views._call_openrouter", return_value="Bonjour !"):
+            response = self.client.post(
+                "/api/v1/ai/ask/",
+                {"message": "Bonjour", "history": "pas-une-liste"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_invalid_request_does_not_consume_quota(self):
+        """Une requête réellement invalide (message absent) ne débite rien."""
+        response = self.client.post("/api/v1/ai/ask/", {"history": []}, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(karamo_get_remaining(self.user), 5)
 
@@ -324,7 +340,12 @@ class KaramoSafetyTests(TestCase):
             )
             body = b"".join(response.streaming_content).decode("utf-8")
         self.assertEqual(response.status_code, 200)
-        event = json.loads(body.removeprefix("data: ").strip())
+        # Le flux se termine désormais par un marqueur `event: end` : on lit le
+        # premier évènement `data:`, qui porte l'erreur.
+        premier = next(
+            bloc for bloc in body.split("\n\n") if bloc.startswith("data: ")
+        )
+        event = json.loads(premier.removeprefix("data: ").strip())
         self.assertEqual(event["type"], "error")
         self.assertIn("aucune réponse", event["message"])
         self.assertEqual(karamo_get_remaining(self.user), 5)

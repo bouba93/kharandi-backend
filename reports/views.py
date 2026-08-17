@@ -1,9 +1,13 @@
 import io
+import logging
+
 from django.http import HttpResponse
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from core.permissions import IsAdmin
-from core.utils import error_response
+from core.utils import API_EXCEPTIONS, error_response, internal_error_response
+
+logger = logging.getLogger(__name__)
 
 class TransactionsPDFView(APIView):
     permission_classes = [IsAuthenticated]
@@ -18,7 +22,17 @@ class TransactionsPDFView(APIView):
             resp = HttpResponse(HTML(string=html).write_pdf(), content_type="application/pdf")
             resp["Content-Disposition"] = 'attachment; filename="transactions.pdf"'
             return resp
-        except Exception as e: return error_response(f"Erreur PDF : {e}", status=500)
+        except API_EXCEPTIONS:
+            raise
+        except Exception:
+            # 503 : la génération PDF dépend de WeasyPrint et de ses bibliothèques
+            # système. Une indisponibilité est temporaire, pas une requête invalide.
+            return internal_error_response(
+                logger,
+                "export PDF des transactions",
+                message="Export PDF momentanément indisponible.",
+                status=503,
+            )
 
 class StudentReportPDFView(APIView):
     permission_classes = [IsAuthenticated]
@@ -32,7 +46,15 @@ class StudentReportPDFView(APIView):
             resp = HttpResponse(HTML(string=html).write_pdf(), content_type="application/pdf")
             resp["Content-Disposition"] = 'attachment; filename="bulletin.pdf"'
             return resp
-        except Exception as e: return error_response(f"Erreur PDF : {e}", status=500)
+        except API_EXCEPTIONS:
+            raise
+        except Exception:
+            return internal_error_response(
+                logger,
+                "export PDF du bulletin",
+                message="Export PDF momentanément indisponible.",
+                status=503,
+            )
 
 class StatsExcelView(APIView):
     permission_classes = [IsAuthenticated]
