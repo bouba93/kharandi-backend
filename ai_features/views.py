@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import re
+import uuid
 
 import requests as req
 from django.conf import settings
@@ -18,7 +19,13 @@ from django.http import StreamingHttpResponse
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.views import APIView
-from core.utils import success_response, error_response
+from core.utils import (
+    API_EXCEPTIONS,
+    error_response,
+    internal_error_response,
+    sse_error_response,
+    success_response,
+)
 from core.redis_utils import (
     karamo_check_quota, karamo_get_remaining, karamo_refund_quota,
 )
@@ -30,6 +37,72 @@ from .serializers import (
 from .knowledge import get_guinea_context, should_search_guinea
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Erreurs Karamo : toujours du JSON ou du SSE, jamais du HTML ─────────────
+
+def _premier_message_erreur(erreurs, defaut="Requête invalide.") -> str:
+    """Extrait un message lisible du dictionnaire d'erreurs DRF."""
+    if isinstance(erreurs, dict):
+        for valeur in erreurs.values():
+            if isinstance(valeur, (list, tuple)) and valeur:
+                return _premier_message_erreur(valeur[0], defaut)
+            if isinstance(valeur, dict):
+                return _premier_message_erreur(valeur, defaut)
+            if isinstance(valeur, str):
+                return valeur
+    elif isinstance(erreurs, (list, tuple)) and erreurs:
+        return _premier_message_erreur(erreurs[0], defaut)
+    elif isinstance(erreurs, str):
+        return erreurs
+    return defaut
+
+
+def _reponse_400_karamo(serializer):
+    """Réponse 400 JSON auto-explicative pour une requête Karamo invalide.
+
+    Le corps indique les champs REÇUS et les champs ATTENDUS : en cas de
+    décalage de contrat entre le frontend et le backend, la cause est visible
+    directement dans la réponse, sans avoir à lire les journaux du conteneur.
+    """
+    cles = getattr(serializer, "cles_recues", [])
+    logger.warning(
+        "Karamo — requête refusée (400). Champs reçus=%s erreurs=%s",
+        cles, serializer.errors,
+    )
+    return error_response(
+        "Requête Karamo invalide.",
+        errors=serializer.errors,
+        status=400,
+        extra={
+            "code": "requete_invalide",
+            "champs_recus": cles,
+            "champs_attendus": ["message", "history"],
+            "exemple": {"message": "Bonjour Karamo", "history": []},
+        },
+    )
+
+
+def _erreurs_en_sse(request) -> bool:
+    """Faut-il émettre les erreurs du endpoint streaming en SSE ?
+
+    Oui par défaut. Non uniquement si le client demande explicitement du JSON
+    (`Accept: application/json`) sans mentionner `text/event-stream`.
+    """
+    accept = (request.headers.get("Accept") or "").lower()
+    if "text/event-stream" in accept:
+        return True
+    if "application/json" in accept:
+        return False
+    return True
+
+
+def _sse_erreur(message, code="error", **extra) -> str:
+    """Construit un évènement SSE d'erreur valide."""
+    charge = {"type": "error", "code": code, "message": message}
+    charge.update(extra)
+    return f"data: {json.dumps(charge, ensure_ascii=False)}\n\n"
+
 
 OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
 # Modèles par ordre de préférence. Le premier identifiant est celui documenté
@@ -462,18 +535,14 @@ class AIAskView(APIView):
     def post(self, request):
         serializer = AIAskSerializer(data=request.data)
         if not serializer.is_valid():
-            return error_response(
-                "Requête Karamo invalide.",
-                errors=serializer.errors,
-                status=400,
-            )
+            return _reponse_400_karamo(serializer)
         msg = serializer.validated_data["message"]
         hist = serializer.validated_data["history"]
 
         # Vérifier le quota
         allowed, quota_msg = _check_quota(request.user)
         if not allowed:
-            return error_response(quota_msg, status=429)
+            return error_response(quota_msg, status=429, extra={"code": "quota_epuise"})
 
         try:
             ctx, did_search, used_guinea_knowledge = "", False, False
@@ -510,10 +579,20 @@ class AIAskView(APIView):
                     "premium":         _is_subscribed(request.user),
                 }
             )
+        except API_EXCEPTIONS:
+            # Erreurs que DRF sait déjà traduire (validation, 404, permission) :
+            # les avaler ici transformerait un 400 légitime en faux 503.
+            _refund_quota(request.user)
+            raise
         except Exception as exc:
             _refund_quota(request.user)
             logger.exception("Karamo ask failed: %s", exc)
-            return error_response("Karamo est temporairement indisponible.", status=503)
+            return internal_error_response(
+                logger,
+                "Echec de l'appel Karamo (/ai/ask/)",
+                message="Karamo est temporairement indisponible.",
+                status=503,
+            )
 
 
 # ─── POST /ai/ask/stream/ ───────────────────────────────────────────────────
@@ -521,20 +600,37 @@ class AIAskStreamView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        # Sur cet endpoint, les erreurs sont émises en SSE par défaut : le client
+        # parse un flux `data: {...}`, il ne saurait pas lire un corps JSON
+        # classique. On ne renvoie du JSON que si le client le demande
+        # explicitement (Accept: application/json), ce qui reste pratique pour
+        # les tests curl. L'endpoint NE DEVIENT PAS un endpoint JSON.
+        en_sse = _erreurs_en_sse(request)
+
         serializer = AIAskSerializer(data=request.data)
         if not serializer.is_valid():
-            return error_response(
-                "Requête Karamo invalide.",
-                errors=serializer.errors,
-                status=400,
-            )
+            if en_sse:
+                return sse_error_response(
+                    _premier_message_erreur(serializer.errors, "Requête Karamo invalide."),
+                    code="requete_invalide",
+                    status=400,
+                    extra={
+                        "details": serializer.errors,
+                        "champs_recus": getattr(serializer, "cles_recues", []),
+                        "champs_attendus": ["message", "history"],
+                    },
+                )
+            return _reponse_400_karamo(serializer)
+
         msg = serializer.validated_data["message"]
         hist = serializer.validated_data["history"]
 
         # Quota avant de streamer
         allowed, quota_msg = _check_quota(request.user)
         if not allowed:
-            return error_response(quota_msg, status=429)
+            if en_sse:
+                return sse_error_response(quota_msg, code="quota_epuise", status=429)
+            return error_response(quota_msg, status=429, extra={"code": "quota_epuise"})
 
         def generate():
             try:
@@ -583,19 +679,38 @@ class AIAskStreamView(APIView):
                             pass
 
                 if emitted_token:
-                    yield f"data: {json.dumps({'type':'done'})}\n\n"
+                    yield f"data: {json.dumps({'type':'done'}, ensure_ascii=False)}\n\n"
                 else:
                     _refund_quota(request.user)
-                    yield f"data: {json.dumps({'type':'error','message':'Karamo n’a retourné aucune réponse.'})}\n\n"
+                    yield _sse_erreur(
+                        "Karamo n'a retourné aucune réponse.", "reponse_vide"
+                    )
 
             except Exception as exc:
+                # Une exception à l'intérieur du générateur ne peut plus changer
+                # le code HTTP (les en-têtes sont déjà partis) : on la convertit
+                # en évènement SSE d'erreur, jamais en page HTML.
                 _refund_quota(request.user)
-                logger.exception("Karamo stream failed: %s", exc)
-                yield f"data: {json.dumps({'type':'error','message':'Karamo est temporairement indisponible.'})}\n\n"
+                reference = uuid.uuid4().hex[:12]
+                logger.exception("[%s] Karamo stream failed: %s", reference, exc)
+                yield _sse_erreur(
+                    "Karamo est temporairement indisponible.",
+                    "indisponible",
+                    incident=reference,
+                )
+            finally:
+                # Marqueur de fin de flux : le client sait toujours que la
+                # connexion s'est terminée proprement côté serveur.
+                yield "event: end\ndata: {}\n\n"
 
         response = StreamingHttpResponse(generate(), content_type="text/event-stream")
         response["Cache-Control"]     = "no-cache"
-        response["X-Accel-Buffering"] = "no"
+        response["X-Accel-Buffering"] = "no"   # désactive le buffering Nginx
+        # NE PAS ajouter `Connection: keep-alive` ici : c'est un en-tête
+        # hop-by-hop interdit par WSGI (PEP 3333). Gunicorn et le serveur de
+        # développement refusent la réponse et renvoient un 500 text/plain, ce
+        # qui casse le flux SSE. Le maintien de la connexion est géré par
+        # Nginx et Gunicorn, pas par la vue.
         return response
 
 

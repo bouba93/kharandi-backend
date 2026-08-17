@@ -285,6 +285,11 @@ UNFOLD = {
 }
 
 MIDDLEWARE = [
+    # PREMIER de la liste = le plus externe : il voit donc TOUTES les réponses,
+    # y compris les erreurs produites par les middlewares situés en dessous
+    # (DisallowedHost, 404 hors routeur, 500 non capturé). Garantit qu'aucune
+    # route /api/ ne renvoie une page HTML à un client JSON.
+    "core.middleware.ErreursJsonMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "core.middleware.RateLimitMiddleware",
     "django.middleware.security.SecurityMiddleware",
@@ -657,9 +662,27 @@ CELERY_BEAT_SCHEDULE = {
 }
 
 # ─── Rate Limiting ────────────────────────────────────────────────────────────
-RATE_LIMIT_ENABLED = True
-RATE_LIMIT_PER_MIN = 60
-RATE_LIMIT_AI_MIN  = 10
+#
+# Ces trois valeurs sont désormais pilotées par variables d'environnement.
+# Auparavant codées en dur, elles obligeaient à reconstruire l'image Docker
+# pour ajuster une limite — d'où l'impression d'une image « périmée » quand la
+# valeur observée dans le conteneur ne correspondait pas au code attendu.
+# Un `docker compose up -d api` après modification du .env suffit maintenant.
+RATE_LIMIT_ENABLED = env.bool("RATE_LIMIT_ENABLED", default=True)
+
+# Limite générale de l'API, par utilisateur authentifié (IP en repli).
+RATE_LIMIT_PER_MIN = env.int("RATE_LIMIT_PER_MIN", default=300)
+
+# Limite spécifique aux endpoints Karamo. Une conversation en streaming
+# consomme une requête par message : 10/min était trop bas pour un usage
+# normal, d'autant que derrière le NAT d'un opérateur mobile guinéen de
+# nombreux élèves partagent la même adresse IP publique.
+RATE_LIMIT_AI_MIN  = env.int("RATE_LIMIT_AI_MIN", default=30)
+
+# ─── Quota Karamo ─────────────────────────────────────────────────────────────
+# Nombre de messages gratuits par jour et par utilisateur non abonné.
+# Lu par core.redis_utils.limite_gratuite_karamo().
+KARAMO_FREE_DAILY_LIMIT = env.int("KARAMO_FREE_DAILY_LIMIT", default=50)
 SCHOOL_TOKEN_MAX_AGE = env.int("SCHOOL_TOKEN_MAX_AGE", default=12 * 60 * 60)
 
 # ─── Reverse proxy / VPS YIGUI ────────────────────────────────────────────────

@@ -9,17 +9,35 @@ Centralise toutes les interactions avec le cache Redis :
   - Rate limiting API
 """
 from datetime import date
+from django.conf import settings
 from django.core.cache import cache
 import logging
 
 logger = logging.getLogger(__name__)
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
-KARAMO_FREE_DAILY_LIMIT = 5       # messages gratuits / jour
+# Valeur de repli si le réglage n'est pas défini. La valeur effective vient de
+# settings.KARAMO_FREE_DAILY_LIMIT, elle-même pilotée par la variable
+# d'environnement KARAMO_FREE_DAILY_LIMIT : modifier le quota ne demande donc
+# PLUS de reconstruire l'image Docker, seulement de redémarrer le conteneur.
+KARAMO_FREE_DAILY_LIMIT = 50      # messages gratuits / jour (repli)
 OTP_TTL                 = 300     # 5 minutes
 SUBSCRIPTION_TTL        = 600     # 10 minutes
 BAC_SUBJECTS_TTL        = 3600    # 1 heure
 RATE_LIMIT_TTL          = 60      # 1 minute
+
+
+def limite_gratuite_karamo() -> int:
+    """Quota quotidien Karamo effectif.
+
+    Lu dynamiquement dans les réglages à chaque appel (et non figé à
+    l'import) pour que `override_settings` fonctionne en test et qu'un simple
+    changement de variable d'environnement suffise en production.
+    """
+    try:
+        return max(0, int(getattr(settings, "KARAMO_FREE_DAILY_LIMIT", KARAMO_FREE_DAILY_LIMIT)))
+    except (TypeError, ValueError):
+        return KARAMO_FREE_DAILY_LIMIT
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -39,9 +57,11 @@ def karamo_check_quota(user, cost: int = 1) -> tuple[bool, str]:
     key   = _karamo_key(user.id)
     count = cache.get(key, 0)
 
-    if count + cost > KARAMO_FREE_DAILY_LIMIT:
+    limite = limite_gratuite_karamo()
+
+    if count + cost > limite:
         return False, (
-            f"Vous avez atteint votre limite de {KARAMO_FREE_DAILY_LIMIT} messages "
+            f"Vous avez atteint votre limite de {limite} messages "
             f"gratuits par jour. Abonnez-vous à Kharandi Premium pour un accès "
             f"illimité à Karamo !"
         )
@@ -69,7 +89,7 @@ def karamo_get_remaining(user) -> int:
     if _is_subscribed(user):
         return -1
     count = cache.get(_karamo_key(user.id), 0)
-    return max(0, KARAMO_FREE_DAILY_LIMIT - count)
+    return max(0, limite_gratuite_karamo() - count)
 
 
 def karamo_reset_quota(user_id: str):

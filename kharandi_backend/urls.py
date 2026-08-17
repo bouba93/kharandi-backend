@@ -84,3 +84,28 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+
+# ─── Gestionnaires d'erreur : JSON, jamais de page HTML ──────────────────────
+#
+# Deuxième niveau de protection, en complément de core.middleware.
+# ErreursJsonMiddleware : Django court-circuite la chaîne de middlewares pour
+# certaines erreurs et rend alors le gabarit HTML par défaut. Ces gestionnaires
+# garantissent une réponse JSON dans tous les cas.
+from core.middleware import erreur_json  # noqa: E402
+
+
+def handler400(request, exception=None):
+    return erreur_json(request, exception, status=400)
+
+
+def handler403(request, exception=None):
+    return erreur_json(request, exception, status=403)
+
+
+def handler404(request, exception=None):
+    return erreur_json(request, exception, status=404)
+
+
+def handler500(request):
+    return erreur_json(request, None, status=500)
