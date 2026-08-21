@@ -20,7 +20,10 @@ def admin_dashboard(request):
 
     revenue = (
         Transaction.objects
-        .filter(status="success")
+        # `Transaction.Status.SUCCESS` vaut "SUCCESS" (majuscules) : le filtre
+        # "success" ne correspondait à aucune ligne et le chiffre d'affaires
+        # affiché dans l'admin restait donc toujours à 0.
+        .filter(status=Transaction.Status.SUCCESS)
         .aggregate(total=Sum("amount"))
         .get("total")
         or 0

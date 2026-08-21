@@ -131,18 +131,7 @@ def _call_lengopay(amount, currency, reference):
 
 def _get_plan(plan_id_or_name: str):
     """
-    Résout un plan par UUID ou par alias commercial Kharandi.
-
-    Alias officiels :
-      gratuit     → Gratuit
-      eleve       → Élève / Étudiant
-      etudiant    → Élève / Étudiant
-      palmares     → Palmarès National des Écoles
-      repetiteur   → Forfait Standard Répétiteur
-      boutique     → Forfait Standard Boutique
-
-    Les anciens alias sont conservés uniquement pour compatibilité historique.
-    Ils ne pointent plus vers les anciens plans commerciaux.
+    Résout un plan par UUID, slug ou alias commercial Kharandi.
     """
     value = str(plan_id_or_name or "").strip()
 
@@ -156,23 +145,39 @@ def _get_plan(plan_id_or_name: str):
     except (Plan.DoesNotExist, ValueError, TypeError):
         pass
 
-    name_map = {
-        "gratuit": "Gratuit",
+    # Résolution par slug.
+    try:
+        return Plan.objects.get(
+            slug=value.lower(),
+            is_active=True,
+        )
+    except (Plan.DoesNotExist, ValueError, TypeError):
+        pass
 
+    # Alias officiels et historiques utilisés par le frontend.
+    name_map = {
+        "seller": "Boutique Vendeur",
+        "boutique": "Boutique Vendeur",
+        "mensuel": "Premium Mensuel",
+        "annuel": "Premium Annuel",
+        "gratuit": "Gratuit",
         "eleve": "Élève / Étudiant",
         "etudiant": "Élève / Étudiant",
-
         "palmares": "Palmarès National des Écoles",
-
         "repetiteur": "Forfait Standard Répétiteur",
-
-        "boutique": "Forfait Standard Boutique",
+        "abacus": "Kharandi Abacus",
+        "abaque": "Kharandi Abacus",
+        "kharandi-abacus": "Kharandi Abacus",
+        "kharandi_abacus": "Kharandi Abacus",
     }
 
     mapped = name_map.get(value.lower(), value)
 
     try:
-        return Plan.objects.get(name__iexact=mapped, is_active=True)
+        return Plan.objects.get(
+            name__iexact=mapped,
+            is_active=True,
+        )
     except Plan.DoesNotExist:
         return None
 
@@ -305,6 +310,15 @@ class SubscriptionInitiateView(APIView):
                 return error_response(
                     f"Plan '{plan_id}' introuvable.",
                     status=404,
+                )
+
+            # Garde-fou : un produit à paiement unique ne doit jamais
+            # passer par le circuit d'abonnement.
+            if plan.period == Plan.Period.PONCTUEL:
+                return error_response(
+                    f"« {plan.name} » est un achat unique, pas un abonnement. "
+                    "Appelez POST /api/v1/payments/products/initiate/ avec « product ».",
+                    status=400,
                 )
 
             final_amount = Decimal(plan.price)
@@ -525,6 +539,171 @@ class PaymentInitiateView(APIView):
                 message="Impossible de démarrer le paiement. Réessayez ou "
                         "contactez le support en indiquant la référence d'incident.",
             )
+
+
+# ─── POST /payments/products/initiate/ ───────────────────────────────────────
+class ProductOrderInitiateView(APIView):
+    """Achat unique d'un produit / service du catalogue (ex. Kharandi Abacus).
+
+    Body : { "product": "kharandi-abacus" }   (slug, alias ou UUID de Plan)
+
+    Pourquoi cet endpoint plutôt qu'un abonnement
+    ─────────────────────────────────────────────
+    `Subscription` est un OneToOneField vers User : un utilisateur ne peut avoir
+    qu'UN abonnement. Faire passer un achat unique par ce circuit écraserait
+    l'abonnement Premium existant du client. On réutilise donc le circuit de
+    commande déjà en production (`ecommerce.Order` + `Transaction.order` +
+    `_confirm_order`), qui n'a AUCUN effet sur les abonnements.
+
+    Le montant n'est jamais lu dans la requête : il vient de `Plan.price`.
+    Le frontend ne peut donc pas choisir son prix.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            identifiant = str(
+                request.data.get("product")
+                or request.data.get("slug")
+                or request.data.get("product_id")
+                or ""
+            ).strip()
+            if not identifiant:
+                return error_response("« product » est obligatoire.", status=400)
+
+            plan = _get_plan(identifiant)
+            if not plan:
+                return error_response(f"Produit '{identifiant}' introuvable.", status=404)
+            if plan.period != Plan.Period.PONCTUEL:
+                return error_response(
+                    f"« {plan.name} » est un abonnement. Appelez "
+                    "POST /api/v1/payments/subscriptions/initiate/ avec « plan_id ».",
+                    status=400,
+                )
+
+            montant = Decimal(plan.price)   # ← source de vérité : la base
+            if montant <= 0:
+                return error_response(
+                    "Produit mal configuré (prix nul). Contactez le support.",
+                    status=409,
+                )
+
+            from ecommerce.models import Order, OrderItem
+
+            # Déjà acheté ? On ne fait pas payer deux fois le même accès.
+            if OrderItem.objects.filter(
+                order__user=request.user, order__status=Order.Status.PAID, plan=plan,
+            ).exists():
+                return error_response(
+                    f"Vous avez déjà accès à « {plan.name} ».", status=409,
+                )
+
+            ref = _gen_ref()
+            with transaction.atomic():
+                order = Order.objects.create(
+                    user=request.user, total=montant, currency=plan.currency,
+                    note=f"Achat unique : {plan.name}",
+                )
+                OrderItem.objects.create(
+                    order=order, plan=plan, name=plan.name,
+                    unit_price=montant, quantity=1,
+                )
+                tx = Transaction.objects.create(
+                    user=request.user, reference=ref,
+                    amount=montant, currency=plan.currency,
+                    provider=Transaction.Provider.LENGOPAY,
+                    phone=request.user.phone or "",
+                    order=order,
+                    # subscription volontairement NON renseigné : le webhook
+                    # n'activera donc aucun abonnement (cf. _activate()).
+                )
+
+            result = _call_lengopay(montant, plan.currency, ref)
+            if not result["success"]:
+                return error_response(
+                    "Impossible de générer le lien de paiement.",
+                    errors=result.get("error"), status=502,
+                )
+
+            tx.gateway_ref = result["pay_id"]
+            tx.save(update_fields=["gateway_ref"])
+
+            # Même protection que les autres initiations : un callback arrivé
+            # avant l'enregistrement du pay_id est rejoué immédiatement.
+            if claim_orphan_callbacks(tx):
+                try:
+                    from .cron import replay_orphan_callbacks
+                    replay_orphan_callbacks(pay_id=tx.gateway_ref)
+                except Exception:
+                    logger.exception(
+                        "Rejeu du callback orphelin impossible pour %s.", tx.reference
+                    )
+
+            logger.info(
+                "Achat unique initié : %s (%s %s) pour %s — commande %s.",
+                plan.name, montant, plan.currency, request.user.phone, order.id,
+            )
+            return success_response(
+                data={
+                    "product": plan.slug or plan.name,
+                    "amount": str(montant),
+                    "currency": plan.currency,
+                    "order_id": str(order.id),
+                    "reference": ref,
+                    "pay_id": result["pay_id"],
+                    "payment_url": result["payment_url"],
+                    "transaction_id": str(tx.id),
+                },
+                status=201,
+            )
+        except API_EXCEPTIONS:
+            raise
+        except Exception:
+            return internal_error_response(
+                logger,
+                "initiation d'un achat unique",
+                message="Impossible de démarrer le paiement. Réessayez ou "
+                        "contactez le support en indiquant la référence d'incident.",
+            )
+
+
+# ─── GET /payments/entitlements/ ─────────────────────────────────────────────
+class EntitlementListView(APIView):
+    """Droits d'accès aux produits à paiement unique de l'utilisateur connecté.
+
+    Réponse : { "products": { "kharandi-abacus": true }, "purchased": [...] }
+
+    C'est le backend qui décide de l'accès : un droit n'existe que s'il existe
+    une commande PAYÉE contenant la ligne du produit. Le frontend ne fait que
+    lire ce résultat.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from ecommerce.models import Order, OrderItem
+
+        lignes = (
+            OrderItem.objects
+            .filter(order__user=request.user, order__status=Order.Status.PAID,
+                    plan__isnull=False)
+            .select_related("plan", "order")
+        )
+        produits, achats = {}, []
+        for ligne in lignes:
+            cle = ligne.plan.slug or ligne.plan.name
+            produits[cle] = True
+            achats.append({
+                "product": cle,
+                "name": ligne.plan.name,
+                "amount": str(ligne.unit_price),
+                "currency": ligne.order.currency,
+                "paid_at": ligne.order.created_at,
+                "order_id": str(ligne.order_id),
+            })
+        return success_response(data={"products": produits, "purchased": achats})
+
 
 
 # ─── POST /payments/webhook/ ─────────────────────────────────────────────────

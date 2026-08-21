@@ -17,7 +17,9 @@ def dashboard_stats():
         "subscriptions": Subscription.objects.count(),
         "tickets": Ticket.objects.count(),
         "transactions": Transaction.objects.count(),
+        # "SUCCESS" en majuscules (Transaction.Status.SUCCESS) : avec
+        # "success", l'agrégat ne remontait jamais aucune transaction.
         "revenue": Transaction.objects.filter(
-            status="success"
+            status=Transaction.Status.SUCCESS
         ).aggregate(total=Sum("amount"))["total"] or 0,
     }

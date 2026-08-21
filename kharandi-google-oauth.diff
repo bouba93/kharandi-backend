@@ -1,0 +1,1773 @@
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/.env.production.example kharandi-backend-main/.env.production.example
+--- phase1/kharandi-backend-main/.env.production.example	2026-08-17 16:34:25.000000000 +0000
++++ kharandi-backend-main/.env.production.example	2026-08-21 13:34:56.985591565 +0000
+@@ -49,6 +49,34 @@
+ # Nécessaire pour l'admin Django derrière HTTPS.
+ CSRF_TRUSTED_ORIGINS=https://api.kharandi.gn,https://kharandi.gn,https://www.kharandi.gn
+ 
++# ─── Connexion Google (OpenID Connect) ────────────────────────────────────────
++# Identifiants d'un client OAuth de type « Application Web » créé dans la
++# console Google Cloud. Le SECRET est un secret absolu : jamais dans le
++# frontend, jamais dans Git, jamais renvoyé par l'API.
++# Tant que ces deux valeurs sont vides, les endpoints Google répondent 503 et
++# l'authentification existante (téléphone + OTP + mot de passe) est intacte.
++GOOGLE_CLIENT_ID=
++GOOGLE_CLIENT_SECRET=
++
++# URI de redirection autorisée — à déclarer À L'IDENTIQUE dans Google Cloud,
++# rubrique « Authorized redirect URIs ». Google exige HTTPS et refuse les
++# adresses IP. C'est la SEULE URI à déclarer.
++GOOGLE_OAUTH_REDIRECT_URI=https://api.kharandi.gn/api/v1/auth/google/callback/
++
++# Page du site vers laquelle Django renvoie l'utilisateur après Google. Elle ne
++# reçoit qu'un code opaque à usage unique — jamais un JWT, jamais un secret.
++GOOGLE_POST_LOGIN_WEB_URL=https://kharandi.gn/auth/google/retour
++
++# Deep link de l'application mobile, ex. « kharandi://auth/google ».
++# Laisser vide si l'application mobile n'est pas encore prête : la connexion
++# Google reste alors disponible sur le web uniquement.
++GOOGLE_POST_LOGIN_MOBILE_URL=
++
++# Durées de vie en secondes (valeurs par défaut suffisantes en production).
++# GOOGLE_OAUTH_STATE_TTL=600
++# GOOGLE_OAUTH_LOGIN_TICKET_TTL=120
++# GOOGLE_OAUTH_SIGNUP_TICKET_TTL=1800
++
+ # ─── HTTPS ────────────────────────────────────────────────────────────────────
+ # LAISSER À False au premier démarrage. « bash deploy/enable-ssl.sh
+ # api.kharandi.gn admin@kharandi.gn » le passera à True automatiquement après
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/kharandi_backend/settings.py kharandi-backend-main/kharandi_backend/settings.py
+--- phase1/kharandi-backend-main/kharandi_backend/settings.py	2026-08-17 16:34:25.000000000 +0000
++++ kharandi-backend-main/kharandi_backend/settings.py	2026-08-21 13:29:56.001591565 +0000
+@@ -565,6 +565,37 @@
+ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+ FRONTEND_URL       = env("FRONTEND_URL", default="https://kharandi.gn")
+ 
++# ─── Connexion Google (OpenID Connect) ────────────────────────────────────────
++# Le secret client vit UNIQUEMENT ici, alimenté par une variable
++# d'environnement. Il n'est jamais renvoyé par l'API, jamais transmis au
++# frontend, jamais écrit dans Git. Tant que les deux valeurs sont vides, les
++# endpoints Google répondent 503 et le reste de l'authentification est
++# totalement inchangé.
++GOOGLE_CLIENT_ID     = env("GOOGLE_CLIENT_ID",     default="")
++GOOGLE_CLIENT_SECRET = env("GOOGLE_CLIENT_SECRET", default="")
++
++# URI de callback déclarée dans la console Google Cloud. Google exige HTTPS
++# (seul http://localhost est toléré, et jamais une adresse IP).
++GOOGLE_OAUTH_REDIRECT_URI = env(
++    "GOOGLE_OAUTH_REDIRECT_URI",
++    default="https://api.kharandi.gn/api/v1/auth/google/callback/",
++)
++
++# Cibles de retour vers le frontend — LISTE BLANCHE FERMÉE. Aucune URL fournie
++# par le client n'est acceptée : cela interdit toute redirection ouverte.
++GOOGLE_POST_LOGIN_WEB_URL    = env("GOOGLE_POST_LOGIN_WEB_URL",
++                                   default=f"{FRONTEND_URL}/auth/google/retour")
++# Deep link de l'application mobile, ex. « kharandi://auth/google ». Vide = la
++# plateforme mobile est simplement indisponible. Aucun secret n'y transite :
++# seul un code opaque à usage unique, échangeable une seule fois par POST.
++GOOGLE_POST_LOGIN_MOBILE_URL = env("GOOGLE_POST_LOGIN_MOBILE_URL", default="")
++
++# Durées de vie (secondes) : état OAuth, ticket de connexion, ticket
++# d'inscription à compléter (le temps de recevoir et saisir un OTP).
++GOOGLE_OAUTH_STATE_TTL          = env.int("GOOGLE_OAUTH_STATE_TTL",          default=600)
++GOOGLE_OAUTH_LOGIN_TICKET_TTL   = env.int("GOOGLE_OAUTH_LOGIN_TICKET_TTL",   default=120)
++GOOGLE_OAUTH_SIGNUP_TICKET_TTL  = env.int("GOOGLE_OAUTH_SIGNUP_TICKET_TTL",  default=1800)
++
+ # ─── Celery ───────────────────────────────────────────────────────────────────
+ CELERY_BROKER_URL                        = env("REDIS_URL", default="redis://localhost:6379/0")
+ CELERY_RESULT_BACKEND                    = "django-db"
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/requirements.txt kharandi-backend-main/requirements.txt
+--- phase1/kharandi-backend-main/requirements.txt	2026-08-19 12:26:56.000000000 +0000
++++ kharandi-backend-main/requirements.txt	2026-08-21 13:30:21.637591565 +0000
+@@ -31,3 +31,8 @@
+ # 0.79.0 est la dernière version compatible avec Django==5.0.6 (vérifié).
+ # Pour passer à unfold >= 0.80, il faut d'abord migrer vers Django >= 5.1.
+ django-unfold==0.79.0
++
++# Connexion Google (OpenID Connect) — bibliothèque officielle Google, utilisée
++# uniquement pour vérifier la signature et les revendications de l'id_token
++# (JWKS, aud, iss, exp). Aucun protocole cryptographique n'est réimplémenté.
++google-auth==2.35.0
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/users/admin.py kharandi-backend-main/users/admin.py
+--- phase1/kharandi-backend-main/users/admin.py	2026-08-19 12:29:38.000000000 +0000
++++ kharandi-backend-main/users/admin.py	2026-08-21 13:30:21.637591565 +0000
+@@ -232,3 +232,60 @@
+             f'inline; filename="kyc-{dossier.user.phone}-{champ}"'
+         )
+         return reponse
++
++
++# ══════════════════════════════════════════════════════════════════════════════
++#  Comptes Google liés — consultation seule
++# ══════════════════════════════════════════════════════════════════════════════
++#  L'administrateur voit QUI est lié à Google, avec quel email Google et depuis
++#  quand. Rien d'autre : aucun client secret, aucun access token, aucun refresh
++#  token n'est stocké par Kharandi, donc rien de tel ne peut être affiché.
++#  La liaison ne se crée ni ne se modifie depuis l'admin : elle résulte du flux
++#  OAuth vérifié. L'admin peut seulement la supprimer (retirer Google d'un
++#  compte), ce qui ne touche ni le User, ni le Profile, ni les données métier.
++# ══════════════════════════════════════════════════════════════════════════════
++from .models import GoogleAccount  # noqa: E402
++
++
++@admin.register(GoogleAccount)
++class GoogleAccountAdmin(admin.ModelAdmin):
++    list_display = (
++        "telephone_kharandi", "fournisseur", "email", "email_verified",
++        "linked_at", "last_used_at",
++    )
++    list_filter = ("email_verified", "linked_at")
++    search_fields = ("user__phone", "email", "google_sub")
++    date_hierarchy = "linked_at"
++    ordering = ("-linked_at",)
++    list_select_related = ("user",)
++    raw_id_fields = ("user",)
++
++    readonly_fields = (
++        "user", "fournisseur", "google_sub", "email", "email_verified",
++        "given_name", "family_name", "linked_at", "last_used_at",
++    )
++    fieldsets = (
++        ("Compte Kharandi", {"fields": ("user",)}),
++        ("Compte Google", {
++            "fields": ("fournisseur", "google_sub", "email", "email_verified",
++                       "given_name", "family_name"),
++            "description": "Informations transmises par Google et vérifiées par "
++                           "le backend. Aucun jeton Google n'est conservé.",
++        }),
++        ("Suivi", {"fields": ("linked_at", "last_used_at")}),
++    )
++
++    @admin.display(description="Téléphone Kharandi", ordering="user__phone")
++    def telephone_kharandi(self, obj):
++        return obj.user.phone
++
++    @admin.display(description="Fournisseur")
++    def fournisseur(self, obj):
++        return "Google"
++
++    def has_add_permission(self, request):
++        # Une liaison se crée uniquement par un flux OAuth vérifié.
++        return False
++
++    def has_change_permission(self, request, obj=None):
++        return False
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/users/google_oauth.py kharandi-backend-main/users/google_oauth.py
+--- phase1/kharandi-backend-main/users/google_oauth.py	1970-01-01 00:00:00.000000000 +0000
++++ kharandi-backend-main/users/google_oauth.py	2026-08-21 13:28:12.257591565 +0000
+@@ -0,0 +1,210 @@
++"""
++users/google_oauth.py — Couche technique OAuth 2.0 / OpenID Connect Google
++═══════════════════════════════════════════════════════════════════════════
++
++Ce module ne contient AUCUNE logique métier Kharandi : il ne crée pas
++d'utilisateur, ne délivre pas de JWT, ne touche ni au rôle ni au Profile.
++Il fait uniquement le dialogue avec Google :
++
++  1. construction de l'URL d'autorisation (Authorization Code + PKCE S256) ;
++  2. échange du `code` contre les jetons, sur le canal serveur↔serveur
++     authentifié par le `client_secret` ;
++  3. vérification cryptographique de l'`id_token`.
++
++La vérification de l'id_token est DÉLÉGUÉE à `google-auth`, la bibliothèque
++officielle de Google : signature RS256 contre les clés publiques Google
++(JWKS, rotation gérée), `aud`, `exp`, `iss`. Aucune primitive cryptographique
++n'est réimplémentée ici. Les contrôles supplémentaires propres à notre usage
++(`nonce`, `email_verified`, présence du `sub`) sont faits explicitement.
++
++Le `GOOGLE_CLIENT_SECRET` n'est lu que depuis la configuration Django, ne sort
++jamais de ce module et n'apparaît dans aucune réponse d'API.
++"""
++from __future__ import annotations
++
++import base64
++import hashlib
++import secrets
++from urllib.parse import urlencode
++
++import requests
++from django.conf import settings
++
++# Points d'entrée officiels Google (OpenID Connect Discovery).
++GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
++GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
++GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
++
++SCOPES = "openid email profile"
++TIMEOUT = 10
++
++
++class GoogleOAuthError(Exception):
++    """Échec du dialogue avec Google ou identité Google non vérifiable.
++
++    Le message reste volontairement générique côté client : les détails ne
++    partent que dans les logs serveur.
++    """
++
++    def __init__(self, code: str, message: str = ""):
++        self.code = code
++        super().__init__(message or code)
++
++
++# ─── Configuration ────────────────────────────────────────────────────────────
++def est_configure() -> bool:
++    """Vrai si le client OAuth Google est configuré (identifiant + secret)."""
++    return bool(
++        getattr(settings, "GOOGLE_CLIENT_ID", "")
++        and getattr(settings, "GOOGLE_CLIENT_SECRET", "")
++    )
++
++
++def redirect_uri() -> str:
++    """URI de callback déclarée chez Google. Valeur de configuration UNIQUEMENT.
++
++    Elle n'est jamais construite à partir de la requête entrante : cela
++    interdit par construction toute redirection ouverte via l'en-tête Host.
++    """
++    return settings.GOOGLE_OAUTH_REDIRECT_URI
++
++
++def cible_frontend(platform: str) -> str:
++    """URL de retour vers le frontend, choisie dans une liste blanche fermée.
++
++    `platform` est une simple étiquette ("web" / "mobile") : aucune URL fournie
++    par le client n'est acceptée, ce qui élimine le risque d'open redirect.
++    """
++    if platform == "mobile" and settings.GOOGLE_POST_LOGIN_MOBILE_URL:
++        return settings.GOOGLE_POST_LOGIN_MOBILE_URL
++    return settings.GOOGLE_POST_LOGIN_WEB_URL
++
++
++def plateformes_disponibles() -> tuple[str, ...]:
++    if settings.GOOGLE_POST_LOGIN_MOBILE_URL:
++        return ("web", "mobile")
++    return ("web",)
++
++
++# ─── PKCE ─────────────────────────────────────────────────────────────────────
++def nouveau_code_verifier() -> str:
++    """`code_verifier` PKCE : 43 à 128 caractères non réservés (RFC 7636)."""
++    return secrets.token_urlsafe(64)[:96]
++
++
++def code_challenge(verifier: str) -> str:
++    """`code_challenge` = BASE64URL(SHA256(verifier)), sans remplissage."""
++    digest = hashlib.sha256(verifier.encode("ascii")).digest()
++    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
++
++
++def nouveau_secret_url() -> str:
++    """Valeur aléatoire pour un `state`, un `nonce` ou un code de ticket."""
++    return secrets.token_urlsafe(32)
++
++
++def hacher_code(code: str) -> str:
++    """SHA-256 hexadécimal — les tickets ne sont jamais stockés en clair."""
++    return hashlib.sha256(code.encode("utf-8")).hexdigest()
++
++
++# ─── Étape 1 : URL d'autorisation ─────────────────────────────────────────────
++def url_autorisation(*, state: str, nonce: str, verifier: str) -> str:
++    parametres = {
++        "client_id": settings.GOOGLE_CLIENT_ID,
++        "redirect_uri": redirect_uri(),
++        "response_type": "code",
++        "scope": SCOPES,
++        "state": state,
++        "nonce": nonce,
++        "code_challenge": code_challenge(verifier),
++        "code_challenge_method": "S256",
++        # `select_account` évite de reconnecter silencieusement un compte Google
++        # laissé ouvert sur un téléphone partagé.
++        "prompt": "select_account",
++        "access_type": "online",
++        "include_granted_scopes": "true",
++    }
++    return f"{GOOGLE_AUTHORIZATION_ENDPOINT}?{urlencode(parametres)}"
++
++
++# ─── Étape 2 : échange du code ────────────────────────────────────────────────
++def echanger_code(code: str, verifier: str) -> dict:
++    """Échange serveur↔serveur du `code` contre les jetons Google.
++
++    C'est le seul endroit où le `client_secret` est utilisé, sur une connexion
++    TLS sortante vers Google. Aucun jeton Google n'est conservé en base.
++    """
++    donnees = {
++        "code": code,
++        "client_id": settings.GOOGLE_CLIENT_ID,
++        "client_secret": settings.GOOGLE_CLIENT_SECRET,
++        "redirect_uri": redirect_uri(),
++        "grant_type": "authorization_code",
++        "code_verifier": verifier,
++    }
++    try:
++        reponse = requests.post(GOOGLE_TOKEN_ENDPOINT, data=donnees, timeout=TIMEOUT)
++    except requests.RequestException as exc:
++        raise GoogleOAuthError("google_unreachable", str(exc)) from exc
++
++    if reponse.status_code != 200:
++        raise GoogleOAuthError("token_exchange_failed", reponse.text[:300])
++
++    try:
++        charge = reponse.json()
++    except ValueError as exc:
++        raise GoogleOAuthError("token_exchange_failed", "réponse non JSON") from exc
++
++    if not charge.get("id_token"):
++        raise GoogleOAuthError("missing_id_token")
++    return charge
++
++
++# ─── Étape 3 : vérification de l'identité ─────────────────────────────────────
++def verifier_id_token(id_token_brut: str, nonce_attendu: str) -> dict:
++    """Vérifie l'id_token et retourne l'identité Google normalisée.
++
++    Contrôles effectués par `google-auth` : signature RS256 contre les clés
++    publiques Google, `aud` == GOOGLE_CLIENT_ID, `exp`, `iss`.
++    Contrôles explicites ajoutés ici : `iss` dans la liste attendue, `nonce`
++    identique à celui du flux, présence du `sub`, `email_verified` vrai.
++    """
++    from google.auth.transport import requests as google_requests
++    from google.oauth2 import id_token as google_id_token
++
++    try:
++        charge = google_id_token.verify_oauth2_token(
++            id_token_brut,
++            google_requests.Request(),
++            settings.GOOGLE_CLIENT_ID,
++        )
++    except Exception as exc:  # signature, audience, expiration, clés…
++        raise GoogleOAuthError("invalid_identity", str(exc)) from exc
++
++    if charge.get("iss") not in GOOGLE_ISSUERS:
++        raise GoogleOAuthError("invalid_issuer", str(charge.get("iss")))
++
++    # Comparaison à temps constant : le nonce lie l'id_token à CE flux précis.
++    if not nonce_attendu or not secrets.compare_digest(
++        str(charge.get("nonce", "")), str(nonce_attendu)
++    ):
++        raise GoogleOAuthError("invalid_nonce")
++
++    sub = str(charge.get("sub") or "").strip()
++    if not sub:
++        raise GoogleOAuthError("invalid_identity", "sub absent")
++
++    email_verifie = charge.get("email_verified")
++    if email_verifie in ("true", "True"):
++        email_verifie = True
++    if email_verifie is not True:
++        raise GoogleOAuthError("email_not_verified")
++
++    return {
++        "sub": sub,
++        "email": (charge.get("email") or "").strip().lower(),
++        "email_verified": True,
++        "given_name": (charge.get("given_name") or "").strip()[:150],
++        "family_name": (charge.get("family_name") or "").strip()[:150],
++    }
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/users/google_views.py kharandi-backend-main/users/google_views.py
+--- phase1/kharandi-backend-main/users/google_views.py	1970-01-01 00:00:00.000000000 +0000
++++ kharandi-backend-main/users/google_views.py	2026-08-21 13:33:35.529591565 +0000
+@@ -0,0 +1,547 @@
++"""
++users/google_views.py — Connexion Google, pilotée EXCLUSIVEMENT par Django
++═════════════════════════════════════════════════════════════════════════
++
++Django reste le seul responsable de l'identité utilisateur. Le frontend ne fait
++que trois choses : afficher un bouton, ouvrir `…/auth/google/login/`, puis
++échanger un code opaque contre l'authentification Kharandi habituelle.
++
++Flux complet
++────────────
++    Frontend → GET  /api/v1/auth/google/login/?platform=web|mobile
++             ← 302 vers Google (state + nonce + PKCE S256)
++    Google   → GET  /api/v1/auth/google/callback/?code=…&state=…
++             ← 302 vers le frontend avec un ticket opaque à usage unique
++    Frontend → POST /api/v1/auth/google/exchange/   {code}
++             ← soit l'authentification Kharandi standard
++               {user, tokens:{access,refresh}, device_token}
++               soit {status:"signup_required", google:{…}} si aucun compte
++                    Kharandi n'est encore rattaché à cette identité Google.
++    Frontend → POST /api/v1/auth/google/complete/   {code, phone, code_otp, role…}
++             ← authentification Kharandi standard, après vérification OTP du
++               téléphone et choix explicite du rôle.
++    Frontend → POST /api/v1/auth/google/link/       {code}   (JWT requis)
++             ← liaison Google d'un compte déjà connecté.
++
++Règles de sécurité appliquées
++─────────────────────────────
++  - aucune identité n'est déduite d'un email transmis par le frontend ;
++  - le rapprochement de comptes se fait sur `google_sub`, jamais sur l'email,
++    et la liaison exige TOUJOURS une preuve de possession : soit un JWT
++    Kharandi valide, soit un OTP vérifié sur le numéro de téléphone ;
++  - aucun JWT ne circule dans une URL de redirection ni dans un deep link :
++    seul un code opaque à usage unique y transite ;
++  - un rôle privilégié n'est jamais attribué par Google : ADMIN est refusé et
++    le rôle reste choisi explicitement, comme dans l'inscription actuelle ;
++  - une connexion Google ne modifie jamais le rôle, le Profile, l'abonnement,
++    les commandes, les transactions ni les données pédagogiques existantes.
++"""
++from __future__ import annotations
++
++import logging
++import secrets as secrets_std
++from datetime import timedelta
++from urllib.parse import urlencode
++
++from django.conf import settings
++from django.db import transaction
++from django.http import HttpResponseRedirect
++from django.utils import timezone
++from rest_framework.permissions import AllowAny, IsAuthenticated
++from rest_framework.views import APIView
++
++from core.utils import error_response, success_response
++
++from . import google_oauth as goauth
++from .models import GoogleAccount, GoogleAuthTicket, GoogleOAuthState, OTPRecord, User
++from .serializers import UserSerializer
++from .views import (
++    _create_user_with_profile, _get_tokens, _normalize_phone, _register_device,
++)
++
++logger = logging.getLogger(__name__)
++
++# Rôles qu'un utilisateur peut choisir lui-même — strictement les mêmes que
++# ceux des endpoints d'inscription existants. ADMIN en est volontairement exclu.
++ROLES_AUTORISES = ("STUDENT", "TUTOR", "PARENT", "VENDOR")
++
++MESSAGES_ERREUR = {
++    "not_configured": "La connexion Google n'est pas configurée sur ce serveur.",
++    "invalid_state": "Requête Google invalide ou expirée. Recommencez la connexion.",
++    "invalid_identity": "Identité Google invalide.",
++    "email_not_verified": "Cette adresse Google n'est pas vérifiée. "
++                          "Vérifiez-la auprès de Google puis réessayez.",
++    "google_unreachable": "Google est momentanément injoignable. Réessayez.",
++    "token_exchange_failed": "Échec de la vérification auprès de Google.",
++    "missing_id_token": "Réponse Google incomplète.",
++    "invalid_issuer": "Identité Google invalide.",
++    "invalid_nonce": "Identité Google invalide.",
++    "account_disabled": "Ce compte est désactivé.",
++    "invalid_ticket": "Code de connexion invalide ou expiré. Recommencez.",
++}
++
++
++class RedirectionRetour(HttpResponseRedirect):
++    """Redirection de retour vers le frontend, web ou application mobile.
++
++    Django n'autorise par défaut que http/https : le scheme du deep link mobile
++    configuré (ex. « kharandi:// ») est ajouté, et lui seul. Les cibles restent
++    celles de la liste blanche des réglages — jamais une valeur de la requête.
++    """
++
++    @property
++    def allowed_schemes(self):
++        schemes = ["http", "https"]
++        cible = getattr(settings, "GOOGLE_POST_LOGIN_MOBILE_URL", "") or ""
++        if "://" in cible:
++            schemes.append(cible.split("://", 1)[0].lower())
++        return schemes
++
++
++def _message(code_erreur: str) -> str:
++    return MESSAGES_ERREUR.get(code_erreur, "Échec de la connexion Google.")
++
++
++def _reponse_auth(request, user, *, message, status=200, extra=None):
++    """Réponse d'authentification IDENTIQUE à celle du login Kharandi actuel.
++
++    Aucun second système de jetons : on réutilise `_get_tokens` (simplejwt) et
++    `_register_device`, exactement comme `LoginView` et les vues d'inscription.
++    """
++    device_token = _register_device(request, user)
++    donnees = {
++        "user": UserSerializer(user).data,
++        "tokens": _get_tokens(user),
++        "device_token": device_token,
++    }
++    donnees.update(extra or {})
++    return success_response(data=donnees, message=message, status=status)
++
++
++def _creer_ticket(identite: dict, *, kind: str, user=None) -> str:
++    """Crée un ticket opaque et retourne le code en clair (jamais stocké)."""
++    if kind == GoogleAuthTicket.Kind.LOGIN:
++        duree = settings.GOOGLE_OAUTH_LOGIN_TICKET_TTL
++    else:
++        duree = settings.GOOGLE_OAUTH_SIGNUP_TICKET_TTL
++    code = goauth.nouveau_secret_url()
++    GoogleAuthTicket.objects.create(
++        code_hash=goauth.hacher_code(code),
++        kind=kind,
++        user=user,
++        google_sub=identite["sub"],
++        email=identite.get("email", ""),
++        email_verified=identite.get("email_verified", False),
++        given_name=identite.get("given_name", ""),
++        family_name=identite.get("family_name", ""),
++        expires_at=timezone.now() + timedelta(seconds=duree),
++    )
++    return code
++
++
++def _lire_ticket(code: str, *, kind=None) -> GoogleAuthTicket | None:
++    if not code:
++        return None
++    ticket = GoogleAuthTicket.objects.filter(
++        code_hash=goauth.hacher_code(code)
++    ).select_related("user").first()
++    if ticket is None or not ticket.est_utilisable():
++        return None
++    if kind is not None and ticket.kind != kind:
++        return None
++    return ticket
++
++
++def _lier_compte(user, identite: dict) -> GoogleAccount:
++    """Attache une identité Google à un User existant, sans rien écraser.
++
++    Seule la table `GoogleAccount` est écrite : ni le rôle, ni le Profile, ni
++    l'abonnement, ni aucune donnée métier n'est touché.
++    """
++    compte, _ = GoogleAccount.objects.update_or_create(
++        google_sub=identite["sub"],
++        defaults={
++            "user": user,
++            "email": identite.get("email", ""),
++            "email_verified": identite.get("email_verified", False),
++            "given_name": identite.get("given_name", ""),
++            "family_name": identite.get("family_name", ""),
++            "last_used_at": timezone.now(),
++        },
++    )
++    return compte
++
++
++def _purger_expires():
++    """Nettoyage opportuniste des états et tickets périmés (borné, sans tâche)."""
++    limite = timezone.now() - timedelta(days=1)
++    GoogleOAuthState.objects.filter(expires_at__lt=limite).delete()
++    GoogleAuthTicket.objects.filter(expires_at__lt=limite).delete()
++
++
++# ─── GET /auth/google/login/ ───────────────────────────────────────────────────
++class GoogleLoginStartView(APIView):
++    """Démarre le flux OAuth. Redirige vers Google (302).
++
++    `?format=json` renvoie l'URL au lieu de rediriger : utile pour une
++    application mobile qui ouvre elle-même un navigateur système.
++    """
++
++    permission_classes = [AllowAny]
++    authentication_classes = []
++
++    def get(self, request):
++        if not goauth.est_configure():
++            return error_response(_message("not_configured"), status=503,
++                                  errors={"code": "not_configured"})
++
++        platform = request.query_params.get("platform", "web").strip().lower()
++        if platform not in goauth.plateformes_disponibles():
++            platform = "web"
++
++        state = goauth.nouveau_secret_url()
++        nonce = goauth.nouveau_secret_url()
++        verifier = goauth.nouveau_code_verifier()
++
++        GoogleOAuthState.objects.create(
++            state=state, nonce=nonce, code_verifier=verifier, platform=platform,
++            expires_at=timezone.now() + timedelta(seconds=settings.GOOGLE_OAUTH_STATE_TTL),
++        )
++        _purger_expires()
++
++        url = goauth.url_autorisation(state=state, nonce=nonce, verifier=verifier)
++        if request.query_params.get("format") == "json":
++            return success_response(data={"authorization_url": url},
++                                    message="Ouvrez cette URL pour continuer avec Google.")
++        return HttpResponseRedirect(url)
++
++
++# ─── GET /auth/google/callback/ ───────────────────────────────────────────────
++class GoogleCallbackView(APIView):
++    """Callback appelé par Google. Vérifie tout, puis redirige le frontend.
++
++    Rien d'exploitable ne transite dans l'URL de retour : uniquement un code
++    opaque à usage unique et un statut.
++    """
++
++    permission_classes = [AllowAny]
++    authentication_classes = []
++
++    def get(self, request):
++        state_recu = request.query_params.get("state", "")
++        etat = GoogleOAuthState.objects.filter(state=state_recu).first()
++
++        # Le `state` détermine la cible de redirection : si l'état est
++        # inconnu ou périmé, on retombe sur la cible web par défaut.
++        platform = etat.platform if etat else "web"
++
++        if request.query_params.get("error"):
++            logger.warning("Google OAuth refusé par l'utilisateur : %s",
++                           request.query_params.get("error"))
++            return self._retour(platform, status="error", reason="access_denied")
++
++        if etat is None or not etat.est_utilisable():
++            logger.warning("Google OAuth : state invalide ou déjà consommé.")
++            return self._retour(platform, status="error", reason="invalid_state")
++
++        # Consommé immédiatement : un `state` ne sert jamais deux fois.
++        etat.consommer()
++
++        code = request.query_params.get("code", "")
++        if not code:
++            return self._retour(platform, status="error", reason="invalid_state")
++
++        if not goauth.est_configure():
++            return self._retour(platform, status="error", reason="not_configured")
++
++        try:
++            jetons = goauth.echanger_code(code, etat.code_verifier)
++            identite = goauth.verifier_id_token(jetons["id_token"], etat.nonce)
++        except goauth.GoogleOAuthError as exc:
++            logger.warning("Google OAuth échec (%s) : %s", exc.code, exc)
++            return self._retour(platform, status="error", reason=exc.code)
++
++        compte = GoogleAccount.objects.select_related("user").filter(
++            google_sub=identite["sub"]
++        ).first()
++
++        if compte is not None:
++            if not compte.user.is_active:
++                return self._retour(platform, status="error", reason="account_disabled")
++            ticket = _creer_ticket(identite, kind=GoogleAuthTicket.Kind.LOGIN,
++                                   user=compte.user)
++            logger.info("Google OAuth : identité reconnue pour %s", compte.user.phone)
++            return self._retour(platform, status="authenticated", code=ticket)
++
++        # Identité Google vérifiée mais aucun compte Kharandi rattaché.
++        # Aucun compte n'est créé ici : le téléphone (identifiant Kharandi) doit
++        # d'abord être vérifié par OTP et le rôle choisi explicitement.
++        ticket = _creer_ticket(identite, kind=GoogleAuthTicket.Kind.SIGNUP)
++        logger.info("Google OAuth : identité vérifiée, inscription à compléter.")
++        return self._retour(platform, status="signup_required", code=ticket)
++
++    def _retour(self, platform, *, status, code=None, reason=None):
++        cible = goauth.cible_frontend(platform)
++        parametres = {"status": status}
++        if code:
++            parametres["code"] = code
++        if reason:
++            parametres["reason"] = reason
++        separateur = "&" if "?" in cible else "?"
++        return RedirectionRetour(f"{cible}{separateur}{urlencode(parametres)}")
++
++
++# ─── POST /auth/google/exchange/ ──────────────────────────────────────────────
++class GoogleExchangeView(APIView):
++    """Échange le code opaque du callback contre l'authentification Kharandi."""
++
++    permission_classes = [AllowAny]
++    authentication_classes = []
++
++    def post(self, request):
++        code = str(request.data.get("code", "")).strip()
++        ticket = _lire_ticket(code)
++        if ticket is None:
++            return error_response(_message("invalid_ticket"), status=400,
++                                  errors={"code": "invalid_ticket"})
++
++        if ticket.kind == GoogleAuthTicket.Kind.SIGNUP:
++            # Le ticket n'est PAS consommé ici : il ne donne aucun accès et
++            # reste nécessaire à l'appel `complete/` ou `link/`.
++            return success_response(
++                data={
++                    "status": "signup_required",
++                    "google": {
++                        "email": ticket.email,
++                        "first_name": ticket.given_name,
++                        "last_name": ticket.family_name,
++                    },
++                    "roles": list(ROLES_AUTORISES),
++                    "expires_at": ticket.expires_at,
++                },
++                message="Compte Google vérifié. Confirmez votre numéro de "
++                        "téléphone pour finaliser l'inscription.",
++            )
++
++        user = ticket.user
++        if user is None:
++            return error_response(_message("invalid_ticket"), status=400,
++                                  errors={"code": "invalid_ticket"})
++        if not user.is_active:
++            return error_response(_message("account_disabled"), status=403,
++                                  errors={"code": "account_disabled"})
++
++        ticket.consommer()
++        compte = getattr(user, "google_account", None)
++        if compte is not None:
++            compte.marquer_utilise()
++        logger.info("Connexion Google réussie : %s", user.phone)
++        return _reponse_auth(request, user, message="Connexion réussie.",
++                             extra={"is_new": False})
++
++
++# ─── POST /auth/google/complete/ ──────────────────────────────────────────────
++class GoogleCompleteView(APIView):
++    """Finalise une connexion Google : téléphone vérifié par OTP + rôle.
++
++    Deux cas, tous deux sûrs :
++      - le numéro n'existe pas → création du compte selon les règles actuelles
++        (`_create_user_with_profile`), avec le rôle choisi par l'utilisateur ;
++      - le numéro existe déjà → AUCUN nouveau compte : l'identité Google est
++        simplement liée au compte existant. La double preuve (identité Google
++        vérifiée + OTP reçu sur le numéro) rend l'usurpation impossible, et
++        rien n'est écrasé : ni rôle, ni Profile, ni abonnement, ni historique.
++    """
++
++    permission_classes = [AllowAny]
++    authentication_classes = []
++
++    def post(self, request):
++        code = str(request.data.get("code", "")).strip()
++        phone = str(request.data.get("phone", "")).strip()
++        code_otp = str(request.data.get("code_otp") or request.data.get("otp") or "").strip()
++        role = str(request.data.get("role", "STUDENT")).strip().upper()
++        password = str(request.data.get("password", "")).strip()
++
++        ticket = _lire_ticket(code, kind=GoogleAuthTicket.Kind.SIGNUP)
++        if ticket is None:
++            return error_response(_message("invalid_ticket"), status=400,
++                                  errors={"code": "invalid_ticket"})
++        if not phone or not code_otp:
++            return error_response("Numéro de téléphone et code OTP requis.", status=400)
++        if role not in ROLES_AUTORISES:
++            # Google ne peut jamais attribuer un rôle privilégié.
++            return error_response("Rôle invalide.", status=400,
++                                  errors={"code": "invalid_role",
++                                          "roles": list(ROLES_AUTORISES)})
++        if password and len(password) < 6:
++            return error_response("Mot de passe : minimum 6 caractères.", status=400)
++
++        clean = _normalize_phone(phone)
++
++        # Vérification OTP — exactement le mécanisme existant, sans modification.
++        record = OTPRecord.objects.filter(
++            phone=clean, verified=False
++        ).order_by("-sent_at").first()
++        if not record or timezone.now() > record.expires_at:
++            return error_response("Code OTP invalide ou expiré.", status=400)
++
++        from notifications.tasks import verify_otp_sms
++        if not verify_otp_sms(record.verificationid, code_otp, phone=clean):
++            return error_response("Code OTP incorrect.", status=400)
++
++        identite = {
++            "sub": ticket.google_sub,
++            "email": ticket.email,
++            "email_verified": ticket.email_verified,
++            "given_name": ticket.given_name,
++            "family_name": ticket.family_name,
++        }
++
++        # Cette identité Google est-elle déjà rattachée à quelqu'un ?
++        deja_lie = GoogleAccount.objects.select_related("user").filter(
++            google_sub=ticket.google_sub
++        ).first()
++        if deja_lie is not None and deja_lie.user.phone != clean:
++            return error_response(
++                "Ce compte Google est déjà lié à un autre compte Kharandi.",
++                status=409, errors={"code": "google_already_linked"},
++            )
++
++        existant = User.objects.select_related("profile").filter(phone=clean).first()
++
++        if existant is not None:
++            if not existant.is_active:
++                return error_response(_message("account_disabled"), status=403,
++                                      errors={"code": "account_disabled"})
++            autre = GoogleAccount.objects.filter(user=existant).exclude(
++                google_sub=ticket.google_sub
++            ).first()
++            if autre is not None:
++                return error_response(
++                    "Ce compte Kharandi est déjà lié à un autre compte Google.",
++                    status=409, errors={"code": "user_already_linked"},
++                )
++            record.verified = True
++            record.save(update_fields=["verified"])
++            ticket.consommer()
++            _lier_compte(existant, identite)
++            logger.info("Google lié à un compte existant : %s", clean)
++            # Aucune donnée métier modifiée : rôle, Profile et historique intacts.
++            return _reponse_auth(
++                request, existant,
++                message="Compte Google lié. Connexion réussie.",
++                extra={"is_new": False, "linked": True},
++            )
++
++        # ── Création d'un nouveau compte, selon les règles actuelles ──────────
++        record.verified = True
++        record.save(update_fields=["verified"])
++
++        extra = self._extras_profil(request, role, ticket)
++        with transaction.atomic():
++            ticket.consommer()
++            user = _create_user_with_profile(
++                clean, password or secrets_std.token_urlsafe(32), role, extra
++            )
++            if not password:
++                # Pas de mot de passe choisi : aucun secret inconnu mais
++                # utilisable ne doit subsister. La connexion reste possible par
++                # Google, par OTP, ou après une réinitialisation.
++                user.set_unusable_password()
++                user.save(update_fields=["password"])
++            _lier_compte(user, identite)
++
++        logger.info("Inscription Google (%s) : %s", role, clean)
++        return _reponse_auth(
++            request, user, message="Bienvenue sur Kharandi !", status=201,
++            extra={"is_new": True,
++                   **({"validation_status": "pending"} if role == "TUTOR" else {})},
++        )
++
++    def _extras_profil(self, request, role, ticket):
++        """Champs de Profile, calqués sur les vues d'inscription existantes."""
++        donnees = request.data
++        extra = {}
++        prenom = ticket.given_name
++        nom_famille = ticket.family_name
++        if prenom:
++            extra["first_name"] = prenom
++        if nom_famille:
++            extra["last_name"] = nom_famille
++
++        if role == "STUDENT":
++            extra["niveau"] = str(donnees.get("niveau", "")).strip()
++            extra["serie"] = str(donnees.get("serie", "")).strip()
++        elif role == "TUTOR":
++            nom = str(donnees.get("nom", "")).strip() or " ".join(
++                p for p in (prenom, nom_famille) if p
++            )
++            matieres = donnees.get("matieres", [])
++            niveaux = donnees.get("niveaux", [])
++            extra.update({
++                "display_name": nom,
++                # Statut initial identique à l'inscription répétiteur actuelle :
++                # validation manuelle par un administrateur Kharandi.
++                "tutor_status": "PENDING",
++                "tutor_subjects": matieres if isinstance(matieres, list) else [matieres],
++                "tutor_levels": niveaux if isinstance(niveaux, list) else [niveaux],
++                "tutor_zone": str(donnees.get("zone", "")).strip(),
++            })
++        elif role == "VENDOR":
++            extra.update({
++                "shop_name": str(donnees.get("shop_name", "")).strip(),
++                "shop_description": str(donnees.get("shop_description", "")).strip(),
++                "delivery_zone": str(donnees.get("delivery_zone", "")).strip(),
++            })
++        return extra
++
++
++# ─── POST /auth/google/link/ ──────────────────────────────────────────────────
++class GoogleLinkView(APIView):
++    """Lie un compte Google à l'utilisateur DÉJÀ authentifié (JWT Kharandi).
++
++    C'est le chemin de liaison le plus sûr : la possession du compte Kharandi
++    est prouvée par le JWT, celle du compte Google par le flux OAuth complet.
++    """
++
++    permission_classes = [IsAuthenticated]
++
++    def post(self, request):
++        code = str(request.data.get("code", "")).strip()
++        ticket = _lire_ticket(code)
++        if ticket is None:
++            return error_response(_message("invalid_ticket"), status=400,
++                                  errors={"code": "invalid_ticket"})
++
++        deja_lie = GoogleAccount.objects.select_related("user").filter(
++            google_sub=ticket.google_sub
++        ).first()
++        if deja_lie is not None and deja_lie.user_id != request.user.id:
++            return error_response(
++                "Ce compte Google est déjà lié à un autre compte Kharandi.",
++                status=409, errors={"code": "google_already_linked"},
++            )
++        autre = GoogleAccount.objects.filter(user=request.user).exclude(
++            google_sub=ticket.google_sub
++        ).first()
++        if autre is not None:
++            return error_response(
++                "Ce compte Kharandi est déjà lié à un autre compte Google.",
++                status=409, errors={"code": "user_already_linked"},
++            )
++
++        ticket.consommer()
++        compte = _lier_compte(request.user, {
++            "sub": ticket.google_sub,
++            "email": ticket.email,
++            "email_verified": ticket.email_verified,
++            "given_name": ticket.given_name,
++            "family_name": ticket.family_name,
++        })
++        logger.info("Compte Google lié à %s", request.user.phone)
++        return success_response(
++            data={"linked": True, "provider": GoogleAccount.PROVIDER,
++                  "email": compte.email, "linked_at": compte.linked_at},
++            message="Compte Google lié à votre compte Kharandi.",
++        )
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/users/migrations/0007_google_oauth.py kharandi-backend-main/users/migrations/0007_google_oauth.py
+--- phase1/kharandi-backend-main/users/migrations/0007_google_oauth.py	1970-01-01 00:00:00.000000000 +0000
++++ kharandi-backend-main/users/migrations/0007_google_oauth.py	2026-08-21 13:30:52.249591565 +0000
+@@ -0,0 +1,74 @@
++# Generated by Django 5.0.6 on 2026-08-21 13:30
++
++import django.db.models.deletion
++from django.conf import settings
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('users', '0006_tutorkyc'),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name='GoogleOAuthState',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('state', models.CharField(db_index=True, max_length=128, unique=True)),
++                ('nonce', models.CharField(max_length=128)),
++                ('code_verifier', models.CharField(max_length=128)),
++                ('platform', models.CharField(default='web', max_length=16)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('expires_at', models.DateTimeField()),
++                ('used_at', models.DateTimeField(blank=True, null=True)),
++            ],
++            options={
++                'verbose_name': 'état OAuth Google',
++                'verbose_name_plural': 'états OAuth Google',
++                'ordering': ('-created_at',),
++            },
++        ),
++        migrations.CreateModel(
++            name='GoogleAccount',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('google_sub', models.CharField(db_index=True, max_length=255, unique=True, verbose_name='identifiant Google (sub)')),
++                ('email', models.EmailField(blank=True, max_length=254, verbose_name='email Google')),
++                ('email_verified', models.BooleanField(default=False, verbose_name='email vérifié par Google')),
++                ('given_name', models.CharField(blank=True, max_length=150, verbose_name='prénom Google')),
++                ('family_name', models.CharField(blank=True, max_length=150, verbose_name='nom Google')),
++                ('linked_at', models.DateTimeField(auto_now_add=True, verbose_name='date de liaison')),
++                ('last_used_at', models.DateTimeField(blank=True, null=True, verbose_name='dernière connexion Google')),
++                ('user', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='google_account', to=settings.AUTH_USER_MODEL, verbose_name='utilisateur Kharandi')),
++            ],
++            options={
++                'verbose_name': 'compte Google lié',
++                'verbose_name_plural': 'comptes Google liés',
++                'ordering': ('-linked_at',),
++            },
++        ),
++        migrations.CreateModel(
++            name='GoogleAuthTicket',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('code_hash', models.CharField(db_index=True, max_length=64, unique=True)),
++                ('kind', models.CharField(choices=[('LOGIN', 'Connexion'), ('SIGNUP', 'Inscription à compléter')], max_length=10)),
++                ('google_sub', models.CharField(max_length=255)),
++                ('email', models.EmailField(blank=True, max_length=254)),
++                ('email_verified', models.BooleanField(default=False)),
++                ('given_name', models.CharField(blank=True, max_length=150)),
++                ('family_name', models.CharField(blank=True, max_length=150)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('expires_at', models.DateTimeField()),
++                ('used_at', models.DateTimeField(blank=True, null=True)),
++                ('user', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='google_tickets', to=settings.AUTH_USER_MODEL)),
++            ],
++            options={
++                'verbose_name': "ticket d'authentification Google",
++                'verbose_name_plural': "tickets d'authentification Google",
++                'ordering': ('-created_at',),
++            },
++        ),
++    ]
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/users/models.py kharandi-backend-main/users/models.py
+--- phase1/kharandi-backend-main/users/models.py	2026-08-19 12:28:21.000000000 +0000
++++ kharandi-backend-main/users/models.py	2026-08-21 13:27:35.053591565 +0000
+@@ -279,3 +279,131 @@
+         if profil.tutor_status != self.status:
+             profil.tutor_status = self.status
+             profil.save(update_fields=["tutor_status", "updated_at"])
++
++
++# ══════════════════════════════════════════════════════════════════════════════
++#  AUTHENTIFICATION GOOGLE (OpenID Connect) — 100 % ADDITIF
++# ══════════════════════════════════════════════════════════════════════════════
++#  Aucun champ n'est ajouté, renommé ou supprimé sur `User` ni sur `Profile`.
++#  Google est une MÉTHODE D'AUTHENTIFICATION SUPPLÉMENTAIRE : la source de
++#  vérité de l'identité reste `User.phone`, unique, vérifié par OTP.
++#
++#  Trois tables nouvelles, indépendantes du reste du schéma :
++#    - GoogleAccount     : liaison durable « compte Kharandi ↔ compte Google » ;
++#    - GoogleOAuthState  : état éphémère d'un flux OAuth (state / nonce / PKCE) ;
++#    - GoogleAuthTicket  : jeton opaque à usage unique remis au frontend après
++#                          le callback, pour ne JAMAIS faire circuler un JWT
++#                          dans une URL de redirection ou un deep link.
++# ══════════════════════════════════════════════════════════════════════════════
++
++class GoogleAccount(models.Model):
++    """Liaison entre un `User` Kharandi et un compte Google.
++
++    La clé d'identité est `google_sub` (identifiant stable et non réutilisable
++    fourni par Google), JAMAIS l'email : l'email Google est conservé à titre
++    informatif pour l'admin et n'est utilisé pour aucun rapprochement de compte.
++    """
++
++    PROVIDER = "google"
++
++    user = models.OneToOneField(
++        "users.User", on_delete=models.CASCADE, related_name="google_account",
++        verbose_name="utilisateur Kharandi",
++    )
++    google_sub = models.CharField(
++        max_length=255, unique=True, db_index=True,
++        verbose_name="identifiant Google (sub)",
++    )
++    email = models.EmailField(blank=True, verbose_name="email Google")
++    email_verified = models.BooleanField(default=False, verbose_name="email vérifié par Google")
++    given_name = models.CharField(max_length=150, blank=True, verbose_name="prénom Google")
++    family_name = models.CharField(max_length=150, blank=True, verbose_name="nom Google")
++    linked_at = models.DateTimeField(auto_now_add=True, verbose_name="date de liaison")
++    last_used_at = models.DateTimeField(null=True, blank=True, verbose_name="dernière connexion Google")
++
++    class Meta:
++        verbose_name = "compte Google lié"
++        verbose_name_plural = "comptes Google liés"
++        ordering = ("-linked_at",)
++
++    def __str__(self):
++        return f"Google · {self.user.phone}"
++
++    def marquer_utilise(self):
++        self.last_used_at = timezone.now()
++        self.save(update_fields=["last_used_at"])
++
++
++class GoogleOAuthState(models.Model):
++    """État éphémère d'un flux OAuth 2.0 / OIDC, à usage unique.
++
++    Contient le `state` (anti-CSRF), le `nonce` (anti-rejeu de l'id_token) et le
++    `code_verifier` PKCE. Ces valeurs restent exclusivement côté serveur : le
++    navigateur ne voit que le `state`.
++    """
++
++    state = models.CharField(max_length=128, unique=True, db_index=True)
++    nonce = models.CharField(max_length=128)
++    code_verifier = models.CharField(max_length=128)
++    platform = models.CharField(max_length=16, default="web")
++    created_at = models.DateTimeField(auto_now_add=True)
++    expires_at = models.DateTimeField()
++    used_at = models.DateTimeField(null=True, blank=True)
++
++    class Meta:
++        verbose_name = "état OAuth Google"
++        verbose_name_plural = "états OAuth Google"
++        ordering = ("-created_at",)
++
++    def est_utilisable(self):
++        return self.used_at is None and timezone.now() <= self.expires_at
++
++    def consommer(self):
++        self.used_at = timezone.now()
++        self.save(update_fields=["used_at"])
++
++
++class GoogleAuthTicket(models.Model):
++    """Jeton opaque remis au frontend à la fin du flux Google.
++
++    Deux natures :
++      - LOGIN  : l'identité Google est déjà liée à un compte Kharandi. Le
++                 frontend échange le ticket contre les JWT Kharandi habituels.
++      - SIGNUP : l'identité Google est vérifiée mais aucun compte Kharandi n'y
++                 est rattaché. Le ticket ne donne AUCUN accès : il doit être
++                 complété par un téléphone vérifié par OTP et un rôle choisi.
++
++    Seul le SHA-256 du code est stocké : une fuite de base ne permet pas de
++    rejouer un ticket.
++    """
++
++    class Kind(models.TextChoices):
++        LOGIN = "LOGIN", "Connexion"
++        SIGNUP = "SIGNUP", "Inscription à compléter"
++
++    code_hash = models.CharField(max_length=64, unique=True, db_index=True)
++    kind = models.CharField(max_length=10, choices=Kind.choices)
++    user = models.ForeignKey(
++        "users.User", on_delete=models.CASCADE, null=True, blank=True,
++        related_name="google_tickets",
++    )
++    google_sub = models.CharField(max_length=255)
++    email = models.EmailField(blank=True)
++    email_verified = models.BooleanField(default=False)
++    given_name = models.CharField(max_length=150, blank=True)
++    family_name = models.CharField(max_length=150, blank=True)
++    created_at = models.DateTimeField(auto_now_add=True)
++    expires_at = models.DateTimeField()
++    used_at = models.DateTimeField(null=True, blank=True)
++
++    class Meta:
++        verbose_name = "ticket d'authentification Google"
++        verbose_name_plural = "tickets d'authentification Google"
++        ordering = ("-created_at",)
++
++    def est_utilisable(self):
++        return self.used_at is None and timezone.now() <= self.expires_at
++
++    def consommer(self):
++        self.used_at = timezone.now()
++        self.save(update_fields=["used_at"])
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/users/tests_google.py kharandi-backend-main/users/tests_google.py
+--- phase1/kharandi-backend-main/users/tests_google.py	1970-01-01 00:00:00.000000000 +0000
++++ kharandi-backend-main/users/tests_google.py	2026-08-21 13:34:15.709591565 +0000
+@@ -0,0 +1,607 @@
++"""
++users/tests_google.py — Connexion Google pilotée par Django
++═══════════════════════════════════════════════════════════
++
++Ces tests couvrent les 15 cas exigés par le cahier des charges, plus la
++non-régression du reste de l'authentification.
++
++Le dialogue réseau avec Google est simulé aux deux seules frontières sortantes
++(`echanger_code` et `verifier_id_token`) : tout le reste — state, nonce, PKCE,
++tickets, liaison de comptes, création d'utilisateur, JWT — est exécuté pour de
++vrai contre la base de test.
++"""
++from datetime import timedelta
++from unittest.mock import patch
++from urllib.parse import parse_qs, urlparse
++
++from django.test import TestCase, override_settings
++from django.urls import reverse
++from django.utils import timezone
++
++from users.google_oauth import GoogleOAuthError, code_challenge
++from users.models import (
++    GoogleAccount, GoogleAuthTicket, GoogleOAuthState, OTPRecord, Profile, User,
++)
++
++IDENTITE_GOOGLE = {
++    "sub": "1234567890google",
++    "email": "mariama@example.com",
++    "email_verified": True,
++    "given_name": "Mariama",
++    "family_name": "Diallo",
++}
++
++REGLAGES_GOOGLE = dict(
++    GOOGLE_CLIENT_ID="client-id-de-test.apps.googleusercontent.com",
++    GOOGLE_CLIENT_SECRET="secret-de-test",
++    GOOGLE_OAUTH_REDIRECT_URI="https://api.kharandi.gn/api/v1/auth/google/callback/",
++    GOOGLE_POST_LOGIN_WEB_URL="https://kharandi.gn/auth/google/retour",
++    GOOGLE_POST_LOGIN_MOBILE_URL="kharandi://auth/google",
++)
++
++
++@override_settings(**REGLAGES_GOOGLE)
++class BaseGoogleTests(TestCase):
++    """Outils communs : démarrage du flux, callback simulé, OTP vérifié."""
++
++    def _demarrer(self, platform="web"):
++        reponse = self.client.get(reverse("google-login"), {"platform": platform})
++        self.assertEqual(reponse.status_code, 302)
++        return GoogleOAuthState.objects.latest("created_at")
++
++    def _callback(self, etat, identite=None, erreur=None, state=None):
++        """Rejoue le callback Google avec une identité vérifiée simulée."""
++        identite = identite or dict(IDENTITE_GOOGLE)
++        with patch("users.google_oauth.echanger_code",
++                   return_value={"id_token": "jeton-simule"}) as echange, \
++             patch("users.google_oauth.verifier_id_token",
++                   side_effect=erreur if erreur else None,
++                   return_value=identite) as verif:
++            reponse = self.client.get(reverse("google-callback"), {
++                "code": "code-google", "state": state or (etat.state if etat else ""),
++            })
++        self.echange = echange
++        self.verif = verif
++        return reponse
++
++    def _params_retour(self, reponse):
++        self.assertEqual(reponse.status_code, 302)
++        return parse_qs(urlparse(reponse["Location"]).query), reponse["Location"]
++
++    def _otp_pret(self, phone):
++        """Crée un OTP en attente sur ce numéro (mécanisme existant, inchangé)."""
++        from users.views import _normalize_phone
++        return OTPRecord.objects.create(
++            phone=_normalize_phone(phone), verificationid="verif-1",
++            expires_at=timezone.now() + timedelta(minutes=5),
++        )
++
++    def _completer(self, code_ticket, phone, role="STUDENT", otp_valide=True, **extra):
++        self._otp_pret(phone)
++        with patch("notifications.tasks.verify_otp_sms", return_value=otp_valide):
++            return self.client.post(reverse("google-complete"), {
++                "code": code_ticket, "phone": phone, "code_otp": "123456",
++                "role": role, **extra,
++            }, content_type="application/json")
++
++    def _code_ticket_via_callback(self, platform="web", identite=None):
++        etat = self._demarrer(platform)
++        reponse = self._callback(etat, identite=identite)
++        params, _ = self._params_retour(reponse)
++        return params, reponse
++
++
++# ═══════════════════ 1. Démarrage du flux OAuth ═══════════════════════════════
++class DemarrageOAuthTests(BaseGoogleTests):
++
++    def test_demarrage_redirige_vers_google_avec_state_nonce_et_pkce(self):
++        """Cas 1 — le flux part de Django, avec state, nonce et PKCE S256."""
++        reponse = self.client.get(reverse("google-login"))
++        self.assertEqual(reponse.status_code, 302)
++        url = urlparse(reponse["Location"])
++        self.assertEqual(url.netloc, "accounts.google.com")
++        params = parse_qs(url.query)
++
++        etat = GoogleOAuthState.objects.get()
++        self.assertEqual(params["state"], [etat.state])
++        self.assertEqual(params["nonce"], [etat.nonce])
++        self.assertEqual(params["code_challenge_method"], ["S256"])
++        self.assertEqual(params["code_challenge"], [code_challenge(etat.code_verifier)])
++        self.assertEqual(params["response_type"], ["code"])
++        self.assertEqual(params["redirect_uri"],
++                         [REGLAGES_GOOGLE["GOOGLE_OAUTH_REDIRECT_URI"]])
++        # Le secret client ne quitte jamais le serveur.
++        self.assertNotIn("client_secret", params)
++        self.assertNotIn("secret-de-test", reponse["Location"])
++
++    def test_le_verifier_pkce_ne_quitte_jamais_le_serveur(self):
++        reponse = self.client.get(reverse("google-login"))
++        etat = GoogleOAuthState.objects.get()
++        self.assertNotIn(etat.code_verifier, reponse["Location"])
++
++    @override_settings(GOOGLE_CLIENT_ID="", GOOGLE_CLIENT_SECRET="")
++    def test_sans_configuration_google_l_endpoint_est_indisponible(self):
++        """Sans identifiants, Google est simplement inactif : 503, jamais 500."""
++        reponse = self.client.get(reverse("google-login"))
++        self.assertEqual(reponse.status_code, 503)
++        self.assertFalse(GoogleOAuthState.objects.exists())
++
++    def test_la_cible_mobile_est_un_deep_link_sans_secret(self):
++        etat = self._demarrer("mobile")
++        self.assertEqual(etat.platform, "mobile")
++        params, url = self._params_retour(self._callback(etat))
++        self.assertTrue(url.startswith("kharandi://auth/google"))
++        self.assertNotIn("secret", url)
++        self.assertNotIn("access", url)
++
++
++# ═══════════════════ 2 à 5. Callback et rejets de sécurité ════════════════════
++class CallbackTests(BaseGoogleTests):
++
++    def test_callback_valide_verifie_l_identite_et_ne_cree_rien(self):
++        """Cas 2 — callback valide : identité vérifiée, aucun compte créé."""
++        params, _ = self._code_ticket_via_callback()
++        self.assertEqual(params["status"], ["signup_required"])
++        self.assertEqual(GoogleAuthTicket.objects.count(), 1)
++        ticket = GoogleAuthTicket.objects.get()
++        self.assertEqual(ticket.kind, GoogleAuthTicket.Kind.SIGNUP)
++        self.assertIsNone(ticket.user)
++        # Aucun utilisateur créé sans téléphone vérifié.
++        self.assertEqual(User.objects.count(), 0)
++        # Le code en clair n'est pas stocké : seul son SHA-256 l'est.
++        self.assertNotEqual(ticket.code_hash, params["code"][0])
++        self.assertEqual(len(ticket.code_hash), 64)
++
++    def test_state_invalide_est_refuse(self):
++        """Cas 3 — un state inconnu interrompt le flux."""
++        self._demarrer()
++        reponse = self._callback(None, state="state-forge")
++        params, _ = self._params_retour(reponse)
++        self.assertEqual(params["status"], ["error"])
++        self.assertEqual(params["reason"], ["invalid_state"])
++        self.assertFalse(GoogleAuthTicket.objects.exists())
++        self.assertEqual(User.objects.count(), 0)
++
++    def test_state_est_a_usage_unique(self):
++        etat = self._demarrer()
++        self._callback(etat)
++        etat.refresh_from_db()
++        self.assertIsNotNone(etat.used_at)
++        params, _ = self._params_retour(self._callback(etat))
++        self.assertEqual(params["reason"], ["invalid_state"])
++
++    def test_state_expire_est_refuse(self):
++        etat = self._demarrer()
++        GoogleOAuthState.objects.filter(pk=etat.pk).update(
++            expires_at=timezone.now() - timedelta(seconds=1))
++        params, _ = self._params_retour(self._callback(etat))
++        self.assertEqual(params["reason"], ["invalid_state"])
++
++    def test_identite_google_invalide_est_refusee(self):
++        """Cas 4 — signature, audience ou émetteur invalide : rien n'est créé."""
++        etat = self._demarrer()
++        reponse = self._callback(etat, erreur=GoogleOAuthError("invalid_identity"))
++        params, _ = self._params_retour(reponse)
++        self.assertEqual(params["status"], ["error"])
++        self.assertEqual(params["reason"], ["invalid_identity"])
++        self.assertFalse(GoogleAuthTicket.objects.exists())
++        self.assertEqual(User.objects.count(), 0)
++
++    def test_email_non_verifie_est_refuse(self):
++        """Cas 5 — un email Google non vérifié n'authentifie personne."""
++        etat = self._demarrer()
++        reponse = self._callback(etat, erreur=GoogleOAuthError("email_not_verified"))
++        params, _ = self._params_retour(reponse)
++        self.assertEqual(params["reason"], ["email_not_verified"])
++        self.assertFalse(GoogleAuthTicket.objects.exists())
++        self.assertEqual(User.objects.count(), 0)
++
++    def test_refus_utilisateur_chez_google_est_gere(self):
++        etat = self._demarrer()
++        reponse = self.client.get(reverse("google-callback"),
++                                  {"error": "access_denied", "state": etat.state})
++        params, _ = self._params_retour(reponse)
++        self.assertEqual(params["reason"], ["access_denied"])
++
++    def test_la_redirection_de_retour_est_toujours_une_cible_de_liste_blanche(self):
++        """Aucune redirection ouverte : la cible ne vient jamais de la requête."""
++        etat = self._demarrer()
++        # Aucun appel réseau : l'échange est simulé en échec, seule la cible de
++        # redirection est observée.
++        with patch("users.google_oauth.echanger_code",
++                   side_effect=GoogleOAuthError("token_exchange_failed")):
++            reponse = self.client.get(reverse("google-callback"), {
++                "code": "c", "state": etat.state,
++                "next": "https://pirate.example.com/vol",
++                "redirect_uri": "https://pirate.example.com/vol",
++            })
++        self.assertEqual(reponse.status_code, 302)
++        self.assertTrue(reponse["Location"].startswith(
++            REGLAGES_GOOGLE["GOOGLE_POST_LOGIN_WEB_URL"]))
++        self.assertNotIn("pirate.example.com", reponse["Location"])
++
++
++# ═══════════════════ 6. Nouvel utilisateur ════════════════════════════════════
++class NouvelUtilisateurTests(BaseGoogleTests):
++
++    def test_nouvel_utilisateur_cree_apres_otp_et_choix_du_role(self):
++        """Cas 6 — création selon les règles actuelles : phone + OTP + rôle."""
++        params, _ = self._code_ticket_via_callback()
++        code = params["code"][0]
++
++        # Étape intermédiaire : le frontend apprend qu'il faut compléter.
++        echange = self.client.post(reverse("google-exchange"), {"code": code},
++                                   content_type="application/json")
++        self.assertEqual(echange.status_code, 200)
++        self.assertEqual(echange.json()["data"]["status"], "signup_required")
++        self.assertEqual(echange.json()["data"]["google"]["email"],
++                         IDENTITE_GOOGLE["email"])
++
++        reponse = self._completer(code, "620000001", role="STUDENT",
++                                  niveau="Terminale", serie="SM")
++        self.assertEqual(reponse.status_code, 201)
++        donnees = reponse.json()["data"]
++
++        user = User.objects.get(phone="+224620000001")
++        self.assertEqual(user.role, "STUDENT")
++        self.assertTrue(Profile.objects.filter(user=user).exists())
++        self.assertEqual(user.profile.niveau, "Terminale")
++        self.assertEqual(user.profile.serie, "SM")
++        self.assertEqual(user.profile.first_name, "Mariama")
++        self.assertFalse(user.profile.onboarding_completed)
++        # Google est enregistré comme méthode d'authentification, rien de plus.
++        compte = GoogleAccount.objects.get(user=user)
++        self.assertEqual(compte.google_sub, IDENTITE_GOOGLE["sub"])
++        self.assertTrue(compte.email_verified)
++        self.assertTrue(donnees["is_new"])
++        # Sans mot de passe choisi, aucun secret inconnu mais utilisable.
++        self.assertFalse(user.has_usable_password())
++
++    def test_le_ticket_d_inscription_est_a_usage_unique(self):
++        params, _ = self._code_ticket_via_callback()
++        code = params["code"][0]
++        self.assertEqual(self._completer(code, "620000002").status_code, 201)
++        seconde = self._completer(code, "620000003")
++        self.assertEqual(seconde.status_code, 400)
++        self.assertEqual(User.objects.count(), 1)
++
++    def test_otp_incorrect_empeche_toute_creation(self):
++        params, _ = self._code_ticket_via_callback()
++        reponse = self._completer(params["code"][0], "620000004", otp_valide=False)
++        self.assertEqual(reponse.status_code, 400)
++        self.assertEqual(User.objects.count(), 0)
++        self.assertFalse(GoogleAccount.objects.exists())
++
++    def test_sans_otp_actif_aucune_creation(self):
++        params, _ = self._code_ticket_via_callback()
++        with patch("notifications.tasks.verify_otp_sms", return_value=True):
++            reponse = self.client.post(reverse("google-complete"), {
++                "code": params["code"][0], "phone": "620000005",
++                "code_otp": "123456", "role": "STUDENT",
++            }, content_type="application/json")
++        self.assertEqual(reponse.status_code, 400)
++        self.assertEqual(User.objects.count(), 0)
++
++    def test_google_ne_peut_jamais_attribuer_un_role_privilegie(self):
++        """Cas 6 (suite) — ADMIN est refusé, aucun rôle n'est déduit de Google."""
++        params, _ = self._code_ticket_via_callback()
++        for role in ("ADMIN", "admin", "SUPERUSER", "inconnu"):
++            reponse = self._completer(params["code"][0], "620000006", role=role)
++            self.assertEqual(reponse.status_code, 400, role)
++        self.assertEqual(User.objects.count(), 0)
++
++    def test_le_workflow_repetiteur_reste_en_attente_de_validation(self):
++        """Le choix élève/répétiteur et la validation manuelle sont conservés."""
++        params, _ = self._code_ticket_via_callback()
++        reponse = self._completer(params["code"][0], "620000007", role="TUTOR",
++                                  nom="Alpha Camara", matieres=["Maths"],
++                                  niveaux=["Terminale"], zone="Ratoma")
++        self.assertEqual(reponse.status_code, 201)
++        user = User.objects.get(phone="+224620000007")
++        self.assertEqual(user.role, "TUTOR")
++        self.assertEqual(user.profile.tutor_status, "PENDING")
++        self.assertEqual(reponse.json()["data"]["validation_status"], "pending")
++
++
++# ═══════════════════ 7 à 9. Comptes existants, liaison, doublons ══════════════
++class ComptesExistantsTests(BaseGoogleTests):
++
++    def setUp(self):
++        self.user = User.objects.create_user(phone="+224620111222", role="TUTOR")
++        self.user.set_password("motdepasse")
++        self.user.save(update_fields=["password"])
++        self.profil = Profile.objects.get_or_create(user=self.user)[0]
++        self.profil.display_name = "Fatoumata"
++        self.profil.tutor_status = "APPROVED"
++        self.profil.points = 350
++        self.profil.save()
++
++    def test_utilisateur_existant_est_lie_sans_doublon(self):
++        """Cas 7 & 9 — même personne : liaison, pas de second compte."""
++        params, _ = self._code_ticket_via_callback()
++        reponse = self._completer(params["code"][0], "620111222", role="STUDENT")
++        self.assertEqual(reponse.status_code, 200)
++        self.assertTrue(reponse.json()["data"]["linked"])
++        self.assertEqual(User.objects.count(), 1)
++        self.assertEqual(GoogleAccount.objects.count(), 1)
++        self.assertEqual(GoogleAccount.objects.get().user, self.user)
++
++    def test_la_liaison_ne_modifie_ni_role_ni_profil_ni_donnees(self):
++        """Cas 11, 12 & 14 — rôle, Profile et données restent intacts."""
++        params, _ = self._code_ticket_via_callback()
++        self._completer(params["code"][0], "620111222", role="STUDENT")
++        self.user.refresh_from_db()
++        self.profil.refresh_from_db()
++        # Le rôle demandé (STUDENT) est IGNORÉ : le compte existe déjà.
++        self.assertEqual(self.user.role, "TUTOR")
++        self.assertEqual(self.profil.display_name, "Fatoumata")
++        self.assertEqual(self.profil.tutor_status, "APPROVED")
++        self.assertEqual(self.profil.points, 350)
++        self.assertTrue(self.user.check_password("motdepasse"))
++
++    def test_l_abonnement_et_les_commandes_survivent_a_la_liaison(self):
++        """Cas 13 & 14 — abonnement, commandes et transactions inchangés."""
++        from ecommerce.models import Order
++        from payments.models import Plan, Subscription
++
++        plan = Plan.objects.create(name="Premium", period=Plan.Period.MENSUEL,
++                                   price=50000)
++        abonnement = Subscription.objects.create(
++            user=self.user, plan=plan, status=Subscription.Status.ACTIVE,
++            start_date=timezone.now(), end_date=timezone.now() + timedelta(days=30),
++        )
++        commande = Order.objects.create(user=self.user, total=45000,
++                                        status=Order.Status.PAID)
++
++        params, _ = self._code_ticket_via_callback()
++        self._completer(params["code"][0], "620111222")
++
++        abonnement.refresh_from_db()
++        commande.refresh_from_db()
++        self.assertEqual(abonnement.status, Subscription.Status.ACTIVE)
++        self.assertEqual(abonnement.plan_id, plan.id)
++        self.assertTrue(abonnement.is_active())
++        self.assertEqual(Order.objects.filter(user=self.user).count(), 1)
++        self.assertEqual(commande.total, 45000)
++        self.assertEqual(commande.status, Order.Status.PAID)
++
++    def test_compte_google_deja_lie_connecte_directement(self):
++        """Cas 8 — identité Google déjà liée : connexion immédiate."""
++        GoogleAccount.objects.create(
++            user=self.user, google_sub=IDENTITE_GOOGLE["sub"],
++            email=IDENTITE_GOOGLE["email"], email_verified=True,
++        )
++        params, _ = self._code_ticket_via_callback()
++        self.assertEqual(params["status"], ["authenticated"])
++
++        reponse = self.client.post(reverse("google-exchange"),
++                                   {"code": params["code"][0]},
++                                   content_type="application/json")
++        self.assertEqual(reponse.status_code, 200)
++        donnees = reponse.json()["data"]
++        self.assertEqual(donnees["user"]["phone"], "+224620111222")
++        self.assertEqual(donnees["user"]["role"], "TUTOR")
++        self.assertFalse(donnees["is_new"])
++        self.assertEqual(User.objects.count(), 1)
++        GoogleAccount.objects.get().refresh_from_db()
++        self.assertIsNotNone(GoogleAccount.objects.get().last_used_at)
++
++    def test_le_ticket_de_connexion_est_a_usage_unique(self):
++        GoogleAccount.objects.create(user=self.user,
++                                     google_sub=IDENTITE_GOOGLE["sub"],
++                                     email_verified=True)
++        params, _ = self._code_ticket_via_callback()
++        code = params["code"][0]
++        self.assertEqual(self.client.post(reverse("google-exchange"), {"code": code},
++                                          content_type="application/json").status_code, 200)
++        rejoue = self.client.post(reverse("google-exchange"), {"code": code},
++                                  content_type="application/json")
++        self.assertEqual(rejoue.status_code, 400)
++
++    def test_une_identite_google_ne_peut_pas_etre_liee_a_deux_comptes(self):
++        """Cas 9 — prévention des doublons et des associations frauduleuses."""
++        GoogleAccount.objects.create(user=self.user,
++                                     google_sub=IDENTITE_GOOGLE["sub"],
++                                     email_verified=True)
++        autre = User.objects.create_user(phone="+224620999888", role="STUDENT")
++        Profile.objects.get_or_create(user=autre)
++
++        ticket = GoogleAuthTicket.objects.create(
++            code_hash=__import__("hashlib").sha256(b"code-brut").hexdigest(),
++            kind=GoogleAuthTicket.Kind.SIGNUP,
++            google_sub=IDENTITE_GOOGLE["sub"], email=IDENTITE_GOOGLE["email"],
++            email_verified=True,
++            expires_at=timezone.now() + timedelta(minutes=10),
++        )
++        reponse = self._completer("code-brut", "620999888")
++        self.assertEqual(reponse.status_code, 409)
++        self.assertEqual(reponse.json()["errors"]["code"], "google_already_linked")
++        self.assertEqual(GoogleAccount.objects.count(), 1)
++        self.assertEqual(GoogleAccount.objects.get().user, self.user)
++        ticket.refresh_from_db()
++        self.assertIsNone(ticket.used_at)
++
++    def test_un_compte_kharandi_ne_peut_pas_etre_lie_a_deux_comptes_google(self):
++        GoogleAccount.objects.create(user=self.user, google_sub="autre-sub-google",
++                                     email_verified=True)
++        params, _ = self._code_ticket_via_callback()
++        reponse = self._completer(params["code"][0], "620111222")
++        self.assertEqual(reponse.status_code, 409)
++        self.assertEqual(reponse.json()["errors"]["code"], "user_already_linked")
++
++    def test_liaison_par_un_utilisateur_deja_authentifie(self):
++        """Chemin le plus sûr : JWT Kharandi valide + flux Google complet."""
++        params, _ = self._code_ticket_via_callback()
++        from users.views import _get_tokens
++        acces = _get_tokens(self.user)["access"]
++        reponse = self.client.post(
++            reverse("google-link"), {"code": params["code"][0]},
++            content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {acces}")
++        self.assertEqual(reponse.status_code, 200)
++        self.assertEqual(GoogleAccount.objects.get().user, self.user)
++        self.user.refresh_from_db()
++        self.assertEqual(self.user.role, "TUTOR")
++
++    def test_la_liaison_exige_une_authentification(self):
++        params, _ = self._code_ticket_via_callback()
++        reponse = self.client.post(reverse("google-link"),
++                                   {"code": params["code"][0]},
++                                   content_type="application/json")
++        self.assertEqual(reponse.status_code, 401)
++        self.assertFalse(GoogleAccount.objects.exists())
++
++
++# ═══════════════════ 10. Utilisateur désactivé ════════════════════════════════
++class UtilisateurDesactiveTests(BaseGoogleTests):
++
++    def setUp(self):
++        self.user = User.objects.create_user(phone="+224620555444", role="STUDENT")
++        Profile.objects.get_or_create(user=self.user)
++        GoogleAccount.objects.create(user=self.user,
++                                     google_sub=IDENTITE_GOOGLE["sub"],
++                                     email_verified=True)
++        self.user.is_active = False
++        self.user.save(update_fields=["is_active"])
++
++    def test_un_compte_desactive_ne_peut_pas_se_connecter_par_google(self):
++        """Cas 10 — Google ne contourne pas la désactivation d'un compte."""
++        params, _ = self._code_ticket_via_callback()
++        self.assertEqual(params["status"], ["error"])
++        self.assertEqual(params["reason"], ["account_disabled"])
++        self.assertFalse(GoogleAuthTicket.objects.exists())
++
++    def test_un_ticket_ne_reanime_pas_un_compte_desactive(self):
++        ticket_code = "code-direct"
++        GoogleAuthTicket.objects.create(
++            code_hash=__import__("hashlib").sha256(ticket_code.encode()).hexdigest(),
++            kind=GoogleAuthTicket.Kind.LOGIN, user=self.user,
++            google_sub=IDENTITE_GOOGLE["sub"], email_verified=True,
++            expires_at=timezone.now() + timedelta(minutes=5),
++        )
++        reponse = self.client.post(reverse("google-exchange"), {"code": ticket_code},
++                                   content_type="application/json")
++        self.assertEqual(reponse.status_code, 403)
++        self.assertEqual(reponse.json()["errors"]["code"], "account_disabled")
++
++    def test_un_compte_desactive_ne_peut_pas_etre_lie_par_otp(self):
++        GoogleAccount.objects.all().delete()
++        params, _ = self._code_ticket_via_callback()
++        reponse = self._completer(params["code"][0], "620555444")
++        self.assertEqual(reponse.status_code, 403)
++        self.assertFalse(GoogleAccount.objects.exists())
++
++
++# ═══════════════════ 15. Même authentification que le login actuel ════════════
++class MemeAuthentificationTests(BaseGoogleTests):
++
++    def setUp(self):
++        self.user = User.objects.create_user(phone="+224621777666", role="STUDENT")
++        self.user.set_password("motdepasse")
++        self.user.save(update_fields=["password"])
++        Profile.objects.get_or_create(user=self.user)
++        GoogleAccount.objects.create(user=self.user,
++                                     google_sub=IDENTITE_GOOGLE["sub"],
++                                     email_verified=True)
++
++    def test_google_renvoie_exactement_le_meme_contrat_que_le_login(self):
++        """Cas 15 — aucun second système de jetons, même contrat de réponse."""
++        classique = self.client.post(reverse("login"), {
++            "phone": "621777666", "password": "motdepasse",
++        }, content_type="application/json")
++        self.assertEqual(classique.status_code, 200)
++
++        params, _ = self._code_ticket_via_callback()
++        par_google = self.client.post(reverse("google-exchange"),
++                                      {"code": params["code"][0]},
++                                      content_type="application/json")
++        self.assertEqual(par_google.status_code, 200)
++
++        attendu = {"user", "tokens", "device_token"}
++        self.assertTrue(attendu.issubset(classique.json()["data"].keys()))
++        self.assertTrue(attendu.issubset(par_google.json()["data"].keys()))
++        self.assertEqual(set(classique.json()["data"]["tokens"]),
++                         set(par_google.json()["data"]["tokens"]))
++        self.assertEqual(classique.json()["data"]["user"],
++                         par_google.json()["data"]["user"])
++
++    def test_le_jeton_google_est_un_jwt_kharandi_valide_sur_les_endpoints_existants(self):
++        params, _ = self._code_ticket_via_callback()
++        donnees = self.client.post(reverse("google-exchange"),
++                                   {"code": params["code"][0]},
++                                   content_type="application/json").json()["data"]
++        reponse = self.client.get(
++            reverse("auth-me"),
++            HTTP_AUTHORIZATION=f"Bearer {donnees['tokens']['access']}")
++        self.assertEqual(reponse.status_code, 200)
++        self.assertEqual(reponse.json()["data"]["phone"], "+224621777666")
++
++        # Le refresh passe par l'endpoint simplejwt existant, inchangé.
++        rafraichi = self.client.post(reverse("token-refresh"),
++                                     {"refresh": donnees["tokens"]["refresh"]},
++                                     content_type="application/json")
++        self.assertEqual(rafraichi.status_code, 200)
++        self.assertIn("access", rafraichi.json())
++
++    def test_aucune_reponse_google_n_expose_de_secret_ni_de_jeton_google(self):
++        params, _ = self._code_ticket_via_callback()
++        corps = self.client.post(reverse("google-exchange"),
++                                 {"code": params["code"][0]},
++                                 content_type="application/json").content.decode()
++        for interdit in ("secret-de-test", "client_secret", "id_token",
++                         "google_sub", IDENTITE_GOOGLE["sub"]):
++            self.assertNotIn(interdit, corps)
++
++
++# ═══════════════════ Non-régression de l'authentification existante ═══════════
++class NonRegressionAuthTests(BaseGoogleTests):
++
++    def test_la_connexion_par_mot_de_passe_reste_identique(self):
++        user = User.objects.create_user(phone="+224622333444", role="STUDENT")
++        user.set_password("motdepasse")
++        user.save(update_fields=["password"])
++        Profile.objects.get_or_create(user=user)
++        reponse = self.client.post(reverse("login"), {
++            "phone": "622333444", "password": "motdepasse",
++        }, content_type="application/json")
++        self.assertEqual(reponse.status_code, 200)
++        self.assertIn("device_token", reponse.json()["data"])
++
++    def test_l_inscription_eleve_classique_reste_identique(self):
++        OTPRecord.objects.create(phone="+224623111000", verificationid="v",
++                                 expires_at=timezone.now() + timedelta(minutes=5))
++        with patch("notifications.tasks.verify_otp_sms", return_value=True):
++            reponse = self.client.post(reverse("register-eleve"), {
++                "phone": "623111000", "code": "123456", "password": "motdepasse",
++                "niveau": "Terminale", "serie": "SM",
++            }, content_type="application/json")
++        self.assertEqual(reponse.status_code, 201)
++        user = User.objects.get(phone="+224623111000")
++        self.assertFalse(GoogleAccount.objects.filter(user=user).exists())
++        self.assertTrue(user.has_usable_password())
++
++    def test_les_endpoints_google_n_ont_pas_deplace_les_routes_existantes(self):
++        self.assertEqual(reverse("login"), "/api/v1/auth/login/")
++        self.assertEqual(reverse("auth-me"), "/api/v1/auth/me/")
++        self.assertEqual(reverse("google-login"), "/api/v1/auth/google/login/")
++        self.assertEqual(reverse("google-callback"), "/api/v1/auth/google/callback/")
++
++
++# ═══════════════════ Admin : visibilité sans exposition ══════════════════════
++class AdminGoogleTests(TestCase):
++
++    def test_l_admin_voit_la_liaison_sans_pouvoir_la_creer_ni_la_modifier(self):
++        """Cahier des charges — l'admin voit utilisateur, fournisseur, email, date."""
++        from django.contrib import admin as django_admin
++
++        from users.admin import GoogleAccountAdmin
++
++        instance = django_admin.site._registry[GoogleAccount]
++        self.assertIsInstance(instance, GoogleAccountAdmin)
++        self.assertFalse(instance.has_add_permission(None))
++        self.assertFalse(instance.has_change_permission(None))
++        for colonne in ("telephone_kharandi", "fournisseur", "email", "linked_at"):
++            self.assertIn(colonne, instance.list_display)
++        # Aucun jeton ni secret n'est stocké, donc rien de tel n'est affichable.
++        champs = {c.name for c in GoogleAccount._meta.get_fields()}
++        for interdit in ("access_token", "refresh_token", "client_secret", "id_token"):
++            self.assertNotIn(interdit, champs)
+diff -ruN '--exclude=__pycache__' '--exclude=*.pyc' '--exclude=repro*' phase1/kharandi-backend-main/users/urls.py kharandi-backend-main/users/urls.py
+--- phase1/kharandi-backend-main/users/urls.py	2026-08-19 12:28:59.000000000 +0000
++++ kharandi-backend-main/users/urls.py	2026-08-21 13:30:05.401591565 +0000
+@@ -13,6 +13,10 @@
+     RegisterView, MyPointsView,
+ )
+ from .kyc_views import TutorKYCView
++from .google_views import (
++    GoogleCallbackView, GoogleCompleteView, GoogleExchangeView,
++    GoogleLinkView, GoogleLoginStartView,
++)
+ 
+ urlpatterns = [
+     # ── Connexion ─────────────────────────────────────────────────────────────
+@@ -20,6 +24,14 @@
+     path("login/verify/",            LoginVerifyView.as_view(),          name="login-verify"),
+     path("login/password/",          LoginWithPasswordView.as_view(),    name="login-password"),
+ 
++    # ── Connexion Google (pilotée exclusivement par Django) ───────────────────
++    # Aucun endpoint existant n'est modifié : ces cinq routes sont additives.
++    path("google/login/",            GoogleLoginStartView.as_view(),     name="google-login"),
++    path("google/callback/",         GoogleCallbackView.as_view(),       name="google-callback"),
++    path("google/exchange/",         GoogleExchangeView.as_view(),       name="google-exchange"),
++    path("google/complete/",         GoogleCompleteView.as_view(),       name="google-complete"),
++    path("google/link/",             GoogleLinkView.as_view(),           name="google-link"),
++
+     # ── Inscription OTP (commun) ───────────────────────────────────────────────
+     path("register/otp/send/",       RegisterOTPSendView.as_view(),      name="register-otp-send"),
+ 

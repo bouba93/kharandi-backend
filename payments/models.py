@@ -8,13 +8,27 @@ class Plan(models.Model):
         ANNUEL     = "ANNUEL",     "Annuel"
         GRATUIT    = "GRATUIT",    "Gratuit"
         SEMESTRIEL = "SEMESTRIEL", "Semestriel"
+        # Achat unique (produit / service payé une seule fois, sans abonnement).
+        # Un plan PONCTUEL n'est JAMAIS activé via Subscription : il passe par
+        # une commande (ecommerce.Order) — voir payments/views.py::ProductOrderInitiateView.
+        PONCTUEL   = "PONCTUEL",   "Paiement unique"
 
     id       = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name     = models.CharField(max_length=100)
+    # Identifiant stable, indépendant de l'UUID et du libellé commercial.
+    # `null=True` : les lignes déjà en production n'en ont pas, la migration
+    # n'écrase aucune donnée existante.
+    slug     = models.SlugField(max_length=60, unique=True, null=True, blank=True,
+                                help_text="Identifiant stable utilisé par le frontend "
+                                          "(ex. « kharandi-abacus »). Ne jamais le modifier "
+                                          "après mise en production.")
     period   = models.CharField(max_length=12, choices=Period.choices)
     price    = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=5, default="GNF")
-    features = models.JSONField(default=list)
+    # blank=True : sans cela, l'admin Django refuse une liste vide
+    # (`[]` fait partie de `Field.empty_values`) et rend la création d'un plan
+    # impossible depuis le back-office. Aucun impact base de données.
+    features = models.JSONField(default=list, blank=True)
     is_active= models.BooleanField(default=True)
     def __str__(self): return f"{self.name} — {self.price} {self.currency}"
 
@@ -37,6 +51,10 @@ class Subscription(models.Model):
     def is_active(self):
         if self.status != self.Status.ACTIVE: return False
         if not self.plan or self.plan.period == Plan.Period.GRATUIT: return False
+        # Garde-fou : un achat unique (Kharandi Abacus, etc.) ne doit JAMAIS
+        # être interprété comme un abonnement Premium, même si un plan PONCTUEL
+        # se retrouvait lié à un Subscription par erreur ou import manuel.
+        if self.plan.period == Plan.Period.PONCTUEL: return False
         if self.end_date and timezone.now() > self.end_date: return False
         return True
 

@@ -4,7 +4,9 @@ from .models import Plan, Subscription, Transaction
 class PlanSerializer(serializers.ModelSerializer):
     class Meta:
         model  = Plan
-        fields = ["id", "name", "period", "price", "currency", "features", "is_active"]
+        # `slug` est ajouté (champ additif) : aucun champ existant n'est retiré
+        # ni renommé, le contrat frontend actuel reste valide.
+        fields = ["id", "name", "slug", "period", "price", "currency", "features", "is_active"]
         read_only_fields = ["id"]
 
 class SubscriptionSerializer(serializers.ModelSerializer):

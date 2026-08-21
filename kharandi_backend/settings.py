@@ -565,6 +565,37 @@ USE_I18N = USE_TZ  = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 FRONTEND_URL       = env("FRONTEND_URL", default="https://kharandi.gn")
 
+# ─── Connexion Google (OpenID Connect) ────────────────────────────────────────
+# Le secret client vit UNIQUEMENT ici, alimenté par une variable
+# d'environnement. Il n'est jamais renvoyé par l'API, jamais transmis au
+# frontend, jamais écrit dans Git. Tant que les deux valeurs sont vides, les
+# endpoints Google répondent 503 et le reste de l'authentification est
+# totalement inchangé.
+GOOGLE_CLIENT_ID     = env("GOOGLE_CLIENT_ID",     default="")
+GOOGLE_CLIENT_SECRET = env("GOOGLE_CLIENT_SECRET", default="")
+
+# URI de callback déclarée dans la console Google Cloud. Google exige HTTPS
+# (seul http://localhost est toléré, et jamais une adresse IP).
+GOOGLE_OAUTH_REDIRECT_URI = env(
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    default="https://api.kharandi.gn/api/v1/auth/google/callback/",
+)
+
+# Cibles de retour vers le frontend — LISTE BLANCHE FERMÉE. Aucune URL fournie
+# par le client n'est acceptée : cela interdit toute redirection ouverte.
+GOOGLE_POST_LOGIN_WEB_URL    = env("GOOGLE_POST_LOGIN_WEB_URL",
+                                   default=f"{FRONTEND_URL}/auth/google/retour")
+# Deep link de l'application mobile, ex. « kharandi://auth/google ». Vide = la
+# plateforme mobile est simplement indisponible. Aucun secret n'y transite :
+# seul un code opaque à usage unique, échangeable une seule fois par POST.
+GOOGLE_POST_LOGIN_MOBILE_URL = env("GOOGLE_POST_LOGIN_MOBILE_URL", default="")
+
+# Durées de vie (secondes) : état OAuth, ticket de connexion, ticket
+# d'inscription à compléter (le temps de recevoir et saisir un OTP).
+GOOGLE_OAUTH_STATE_TTL          = env.int("GOOGLE_OAUTH_STATE_TTL",          default=600)
+GOOGLE_OAUTH_LOGIN_TICKET_TTL   = env.int("GOOGLE_OAUTH_LOGIN_TICKET_TTL",   default=120)
+GOOGLE_OAUTH_SIGNUP_TICKET_TTL  = env.int("GOOGLE_OAUTH_SIGNUP_TICKET_TTL",  default=1800)
+
 # ─── Celery ───────────────────────────────────────────────────────────────────
 CELERY_BROKER_URL                        = env("REDIS_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND                    = "django-db"

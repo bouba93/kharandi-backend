@@ -930,14 +930,18 @@ class AmorcagePlansTests(TestCase):
         noms = set(Plan.objects.values_list("name", flat=True))
         self.assertEqual(
             noms,
-            {"Gratuit", "Premium Mensuel", "Premium Annuel", "Boutique Vendeur"},
+            # « Kharandi Abacus » (achat unique 45 000 GNF) fait partie du
+            # catalogue depuis l'ajout du produit : le seeder doit le créer.
+            {"Gratuit", "Premium Mensuel", "Premium Annuel", "Boutique Vendeur",
+             "Kharandi Abacus"},
         )
 
     def test_les_alias_du_frontend_resolvent_apres_amorcage(self):
         from .views import _get_plan
 
         self._seed()
-        for alias in ["mensuel", "annuel", "seller", "boutique", "gratuit"]:
+        for alias in ["mensuel", "annuel", "seller", "boutique", "gratuit",
+                      "abacus", "kharandi-abacus"]:
             self.assertIsNotNone(_get_plan(alias), f"alias « {alias} » non résolu")
 
     def test_amorcage_rejoue_ne_cree_pas_de_doublon(self):
@@ -1002,7 +1006,10 @@ class ParcoursAbonnementTests(TestCase):
     def test_les_plans_sont_visibles_par_le_frontend(self):
         r = self.client.get("/api/v1/payments/plans/")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(len(r.data["data"]), 4)
+        # 4 abonnements + 1 produit à paiement unique (Kharandi Abacus).
+        self.assertEqual(len(r.data["data"]), 5)
+        slugs = {p.get("slug") for p in r.data["data"]}
+        self.assertIn("kharandi-abacus", slugs)
 
     def test_plan_gratuit_active_sans_paiement(self):
         r = self.client.post(
