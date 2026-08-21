@@ -23,4 +23,16 @@ django-redis==5.4.0
 redis==5.0.8
 celery==5.3.6
 django-celery-results==2.5.1
-django-unfold>=0.50,<1.0
+# ⚠️ VERSION FIGÉE — NE PAS ÉLARGIR SANS TESTER L'ADMIN.
+# À partir de 0.80.0, django-unfold appelle `context.flatten()` sur un Context
+# imbriqué produit par `django.contrib.admin.templatetags.admin_modify.submit_row`
+# et lève « ValueError: dictionary update sequence element #0 has length 8; 2 is
+# required » sur TOUTES les pages /add/ et /change/ de l'admin avec Django 5.0.x.
+# 0.79.0 est la dernière version compatible avec Django==5.0.6 (vérifié).
+# Pour passer à unfold >= 0.80, il faut d'abord migrer vers Django >= 5.1.
+django-unfold==0.79.0
+
+# Connexion Google (OpenID Connect) — bibliothèque officielle Google, utilisée
+# uniquement pour vérifier la signature et les revendications de l'id_token
+# (JWKS, aud, iss, exp). Aucun protocole cryptographique n'est réimplémenté.
+google-auth==2.35.0
