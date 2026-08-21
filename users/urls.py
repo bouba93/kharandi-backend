@@ -12,12 +12,25 @@ from .views import (
     PasswordResetRequestView, PasswordResetConfirmView,
     RegisterView, MyPointsView,
 )
+from .kyc_views import TutorKYCView
+from .google_views import (
+    GoogleCallbackView, GoogleCompleteView, GoogleExchangeView,
+    GoogleLinkView, GoogleLoginStartView,
+)
 
 urlpatterns = [
     # ── Connexion ─────────────────────────────────────────────────────────────
     path("login/",                   LoginView.as_view(),               name="login"),
     path("login/verify/",            LoginVerifyView.as_view(),          name="login-verify"),
     path("login/password/",          LoginWithPasswordView.as_view(),    name="login-password"),
+
+    # ── Connexion Google (pilotée exclusivement par Django) ───────────────────
+    # Aucun endpoint existant n'est modifié : ces cinq routes sont additives.
+    path("google/login/",            GoogleLoginStartView.as_view(),     name="google-login"),
+    path("google/callback/",         GoogleCallbackView.as_view(),       name="google-callback"),
+    path("google/exchange/",         GoogleExchangeView.as_view(),       name="google-exchange"),
+    path("google/complete/",         GoogleCompleteView.as_view(),       name="google-complete"),
+    path("google/link/",             GoogleLinkView.as_view(),           name="google-link"),
 
     # ── Inscription OTP (commun) ───────────────────────────────────────────────
     path("register/otp/send/",       RegisterOTPSendView.as_view(),      name="register-otp-send"),
@@ -45,6 +58,9 @@ urlpatterns = [
     path("avatar/",                  AvatarUploadView.as_view(),         name="auth-avatar"),
     path("me/points/",               PointsAddView.as_view(),            name="points-add"),
     path("wallet/",                  WalletView.as_view(),               name="wallet"),
+
+    # ── KYC répétiteur (dépôt + suivi de MON dossier) ─────────────────────────
+    path("kyc/tutor/",               TutorKYCView.as_view(),             name="tutor-kyc"),
 
     # ── Appareils ─────────────────────────────────────────────────────────────
     path("devices/",                 DeviceListView.as_view(),           name="device-list"),

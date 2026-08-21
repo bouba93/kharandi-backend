@@ -40,6 +40,7 @@ from payments.models import Plan
 PLANS = [
     {
         "name": "Gratuit",
+        "slug": "gratuit",
         "period": Plan.Period.GRATUIT,
         "price": Decimal("0"),
         "features": [
@@ -49,6 +50,7 @@ PLANS = [
     },
     {
         "name": "Premium Mensuel",
+        "slug": "premium-mensuel",
         "period": Plan.Period.MENSUEL,
         "price": Decimal("25000"),
         "features": [
@@ -60,6 +62,7 @@ PLANS = [
     },
     {
         "name": "Premium Annuel",
+        "slug": "premium-annuel",
         "period": Plan.Period.ANNUEL,
         "price": Decimal("250000"),
         "features": [
@@ -69,12 +72,27 @@ PLANS = [
     },
     {
         "name": "Boutique Vendeur",
+        "slug": "boutique-vendeur",
         "period": Plan.Period.MENSUEL,
         "price": Decimal("50000"),
         "features": [
             "Publication de produits sur la place de marché",
             "Suivi des commandes",
             "Codes promotionnels",
+        ],
+    },
+    # ── Produit à paiement unique ────────────────────────────────────────────
+    # Kharandi Abacus : service payé UNE fois, 45 000 GNF. Période PONCTUEL →
+    # il ne passe pas par Subscription (voir payments/views.py::
+    # ProductOrderInitiateView) et ne peut donc jamais activer Premium.
+    {
+        "name": "Kharandi Abacus",
+        "slug": "kharandi-abacus",
+        "period": Plan.Period.PONCTUEL,
+        "price": Decimal("45000"),
+        "features": [
+            "Programme de calcul mental Kharandi Abacus",
+            "Accès à vie après paiement unique",
         ],
     },
 ]
@@ -116,6 +134,7 @@ class Command(BaseCommand):
                     if not simulation:
                         Plan.objects.create(
                             name=modele["name"],
+                            slug=modele.get("slug") or None,
                             period=modele["period"],
                             price=modele["price"],
                             currency=devise,
@@ -124,6 +143,16 @@ class Command(BaseCommand):
                         )
                     crees.append(modele["name"])
                     continue
+
+                # Le slug est un identifiant technique manquant sur les lignes
+                # créées avant son introduction : on le renseigne s'il est vide,
+                # sans jamais écraser un slug déjà défini, et même sans
+                # --maj-tarifs (ce n'est ni un prix ni une donnée commerciale).
+                if modele.get("slug") and not existant.slug:
+                    if not simulation:
+                        existant.slug = modele["slug"]
+                        existant.save(update_fields=["slug"])
+                    mis_a_jour.append(f"{existant.name} (slug)")
 
                 if not maj_tarifs:
                     inchanges.append(
